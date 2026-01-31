@@ -1264,8 +1264,7 @@ async def nft_done(callback: types.CallbackQuery):
 
     deal_header_quote = f"<blockquote>🧾 Сделка: #{random_start}</blockquote>"
     deal_body_text = (
-        "🆔 Покупателя: (ожидается)\n"
-        "   · Username: (ожидается)\n"
+        "🪪 Покупатель: @**\n"
         f"💸 Сумма: {deal_data['amount']} TON\n"
         f"🎁 Товар: {deal_data['description']}"
     )
