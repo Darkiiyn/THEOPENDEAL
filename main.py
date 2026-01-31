@@ -211,6 +211,8 @@ async def send_or_edit_message(user_id: int, text: str, reply_markup: types.Inli
         if user_id not in user_data:
             user_data[user_id] = {}
         user_data[user_id]["last_bot_message_id"] = sent_message.message_id
+
+        return sent_message
         
     except Exception as e:
         print(f"Ошибка при отправке сообщения для пользователя {user_id}: {e}")
@@ -224,8 +226,11 @@ async def send_or_edit_message(user_id: int, text: str, reply_markup: types.Inli
             if user_id not in user_data:
                 user_data[user_id] = {}
             user_data[user_id]["last_bot_message_id"] = sent_message.message_id
+            return sent_message
         except Exception as e2:
             print(f"Критическая ошибка при отправке сообщения для пользователя {user_id}: {e2}")
+
+    return None
 
 
 
@@ -405,26 +410,88 @@ async def send_welcome(message: types.Message):
                 with open(deal_path, "w", encoding="utf-8") as file:
                     json.dump(deal_data, file, ensure_ascii=False, indent=4)
 
-                # Отправляем уведомление продавцу о начале сделки
+                # Обновляем карточку сделки у продавца (чтобы вместо плейсхолдера появился реальный покупатель)
+                buyer_username = message.from_user.username
+                buyer_line = f"🪪 Покупатель: @{buyer_username}" if buyer_username else f"🪪 Покупатель: {user_id}"
+
+                # Сборка текста карточки (как при создании сделки)
+                deal_header_quote = f"<blockquote>🧾 Сделка: #{random_start}</blockquote>"
+                deal_body_text = (
+                    f"{buyer_line}\n"
+                    f"💸 Сумма: {deal_data['amount']} TON\n"
+                    f"🎁 Товар: {deal_data['description']}"
+                )
+
+                nft_display = ""
+                nft_links = deal_data.get("nft_links", [])
+                if nft_links:
+                    nft_display = "\n\n🎁 <b>NFT-Подарки в сделке:</b>\n"
+                    for i, link in enumerate(nft_links, 1):
+                        nft_display += f"{i}. {link}\n"
+
+                wallets_display = ""
+                seller_wallets = deal_data.get("seller_wallets", {}) or {}
+                if seller_wallets:
+                    wallets_display = "\n\n💳 <b>Кошельки для оплаты:</b>\n"
+                    for wallet_type, wallet_data in seller_wallets.items():
+                        # Показываем только TON (по запросу)
+                        if wallet_type != "ton":
+                            continue
+                        if wallet_type == "ton":
+                            addr = wallet_data.get("address", "")
+                            if addr:
+                                wallets_display += f"👛 <b>TON:</b> <code>{addr[:10]}...{addr[-10:]}</code>\n"
+                            else:
+                                wallets_display += "👛 <b>TON:</b> <code>не указан</code>\n"
+                else:
+                    wallets_display = "\n\n⚠️ <b>Внимание:</b> У вас нет добавленных кошельков для получения оплаты!"
+
+                share_text = (
+                    f"🧾 Сделка: #{random_start}\n"
+                    f"💸 Сумма: {deal_data['amount']} TON\n"
+                    f"🎁 Товар: {deal_data['description']}\n\n"
+                    f"🔗 Ссылка: {deal_data['link']}"
+                )
+                share_url = "https://t.me/share/url?url=&text=" + urlquote(share_text)
+                created_keyboard = types.InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [types.InlineKeyboardButton(text="📤 Поделиться сделкой", url=share_url)],
+                        [types.InlineKeyboardButton(text="🔙 Вернуться в меню", callback_data="back_to_menu")],
+                    ]
+                )
+
+                created_text = (
+                    "✅ <b>Сделка успешно создана!</b>\n\n"
+                    + deal_header_quote + "\n" + html.escape(deal_body_text)
+                    + nft_display
+                    + f"\n🔗 <b>Ссылка для покупателя:</b> {deal_data['link']}"
+                    + wallets_display
+                )
+
+                seller_message_id = deal_data.get("seller_message_id") or user_data.get(seller_id, {}).get("last_bot_message_id")
+                if seller_message_id:
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=seller_id,
+                            message_id=seller_message_id,
+                            text=created_text,
+                            reply_markup=created_keyboard,
+                            parse_mode="HTML",
+                            disable_web_page_preview=True
+                        )
+                    except Exception as e:
+                        print(f"Не удалось обновить карточку сделки у продавца {seller_id}: {e}")
+
+                # Отправляем уведомление продавцу о начале сделки (отдельным сообщением)
                 try:
-                    nft_links = deal_data.get("nft_links", [])
                     nft_links_display = ""
                     if nft_links:
                         nft_links_display = "\n\n🎁 <b>NFT-Подарки в сделке:</b>\n"
                         for i, link in enumerate(nft_links, 1):
                             nft_links_display += f"{i}. {link}\n"
 
-                    buyer_quote = (
-                        f"🧾 Сделка: #{random_start}\n"
-                        f"🆔 Покупателя: {user_id}\n"
-                        f"   · Username: {message.from_user.username if message.from_user.username else 'нет username'}\n"
-                        f"💸 Сумма: {amount} TON\n"
-                        f"🎁 Товар: {description}"
-                    )
-                    quote_html = html.escape(buyer_quote)
-
                     seller_message = (
-                        f"🛒 <b>Покупатель начал сделку!</b>\n\n"
+                        "🛒 <b>Покупатель вошёл в сделку!</b>\n\n"
                         + deal_header_quote + "\n" + html.escape(deal_body_text)
                         + nft_links_display
                         + (
@@ -435,11 +502,11 @@ async def send_welcome(message: types.Message):
                     )
 
                     # Создаем ссылку на чат с покупателем
-                    if message.from_user.username:
-                        buyer_link = f"https://t.me/{message.from_user.username}"
+                    if buyer_username:
+                        buyer_link = f"https://t.me/{buyer_username}"
                     else:
                         buyer_link = f"tg://user?id={user_id}"
-                    
+
                     seller_keyboard = types.InlineKeyboardMarkup(
                         inline_keyboard=[
                             [types.InlineKeyboardButton(text="✉️ Чат с Покупателем", url=buyer_link)]
@@ -1284,7 +1351,7 @@ async def nft_done(callback: types.CallbackQuery):
         ]
     )
 
-    await send_or_edit_message(
+    sent = await send_or_edit_message(
         user_id,
         "✅ <b>Сделка успешно создана!</b>\n\n"
         + deal_header_quote + "\n" + html.escape(deal_body_text)
@@ -1293,6 +1360,16 @@ async def nft_done(callback: types.CallbackQuery):
         + wallets_display,
         created_keyboard
     )
+
+    # Сохраняем ID сообщения о создании сделки, чтобы потом можно было отредактировать его,
+    # когда покупатель зайдёт в сделку.
+    if sent is not None:
+        deal_data["seller_message_id"] = sent.message_id
+        try:
+            with open(deal_file_path, "w", encoding="utf-8") as file:
+                json.dump(deal_data, file, ensure_ascii=False, indent=4)
+        except Exception as e:
+            print(f"Ошибка при сохранении seller_message_id в сделке {random_start}: {e}")
 
     if user_id in user_data:
         user_data[user_id] = {"last_bot_message_id": user_data[user_id].get("last_bot_message_id")}
