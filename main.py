@@ -659,8 +659,8 @@ async def confirm_payment(message: types.Message):
                 seller_keyboard = types.InlineKeyboardMarkup(
                     inline_keyboard=[
                         [types.InlineKeyboardButton(text="✉️ Чат с Покупателем", url=buyer_link)],
-                        [types.InlineKeyboardButton(text="☑️ Подтвердить передачу", callback_data=f"confirm_gift_sent_{deal_code}")],
-                        [types.InlineKeyboardButton(text="🆘 Поддержка", callback_data="support")]
+                        [types.InlineKeyboardButton(text="✅ Подтвердить передачу", callback_data=f"confirm_gift_sent_{deal_code}")],
+                        [types.InlineKeyboardButton(text="🛠️ Тех. Поддержка", callback_data="support")]
                     ]
                 )
 
