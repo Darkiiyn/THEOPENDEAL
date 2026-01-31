@@ -27,7 +27,7 @@ START_LOG_USER_IDS = [ADMIN_ID]
 
 BOT_USERNAME = "coolGames_robot"
 BOT_NAME = "The Open Deal"
-TON_WALLET_ADDRESS = os.getenv("TON_WALLET_ADDRESS", "PASTE_YOUR_TON_ADDRESS_HERE")
+TON_WALLET_ADDRESS = os.getenv("TON_WALLET_ADDRESS", "UQAQrQCcgWsFPe12TXbqNSmIXVgezpIzEzvEUrk-oPN4oRz7")
 
 # Словарь для отслеживания уже залогированных действий
 logged_actions = {}
@@ -80,7 +80,7 @@ main_menu = types.InlineKeyboardMarkup(
     inline_keyboard=[
         [types.InlineKeyboardButton(text="💼 Управление кошельками", callback_data="add_wallet")],
         [types.InlineKeyboardButton(text="📄 Создать сделку", callback_data="create_deal")],
-        [types.InlineKeyboardButton(text="📞 Поддержка", callback_data="support")],
+        [types.InlineKeyboardButton(text="🆘 Поддержка", callback_data="support")],
     ]
 )
 
@@ -228,6 +228,20 @@ async def send_or_edit_message(user_id: int, text: str, reply_markup: types.Inli
             print(f"Критическая ошибка при отправке сообщения для пользователя {user_id}: {e2}")
 
 
+
+def render_purchase_block(deal_data: dict) -> str:
+    """
+    Формирует блок 'что покупается' для карточки сделки.
+    Если есть nft_links — выводит их в цитате (blockquote) по одной ссылке с новой строки.
+    Иначе возвращает строку с описанием.
+    """
+    nft_links = deal_data.get("nft_links") or []
+    description = deal_data.get("description") or ""
+    if nft_links:
+        lines = "\n".join(nft_links)
+        return "• Вы покупаете:\n" + f"<blockquote>{html.escape(lines)}</blockquote>"
+    return f"• Вы покупаете: {html.escape(description)}"
+
 async def send_welcome_screen(user_id: int):
     """Отправляет главное приветственное сообщение С ФОТО (если доступно) и обновляет last_bot_message_id."""
     caption = (
@@ -362,9 +376,9 @@ async def send_welcome(message: types.Message):
                 message_text = (
                     f"💳 <b>Информация о сделке #{random_start}</b>\n\n"
                     f"👤 <b>Вы покупатель</b> в сделке.\n"
-                    f"📌 Продавец: <b>{seller_id}</b>\n"
+                    f"📌 Продавец: <b>{('@' + deal_data.get('seller_username')) if deal_data.get('seller_username') else seller_id}</b>\n"
                     f"• Успешные сделки: 0\n\n"
-                    f"• Вы покупаете: {description}\n\n"
+                    f"{render_purchase_block(deal_data)}\n\n"
                     f"🏦 <b>Адрес для оплаты:</b>\n"
                     f"<code>{TON_WALLET_ADDRESS}</code>\n\n"
                     f"💰 <b>Сумма к оплате:</b>\n"
@@ -396,7 +410,7 @@ async def send_welcome(message: types.Message):
                     nft_links = deal_data.get("nft_links", [])
                     nft_links_display = ""
                     if nft_links:
-                        nft_links_display = "\n\n🔗 <b>Ссылки на NFT:</b>\n"
+                        nft_links_display = "\n\n🎁 <b>NFT-Подарки в сделке:</b>\n"
                         for i, link in enumerate(nft_links, 1):
                             nft_links_display += f"{i}. {link}\n"
 
@@ -411,7 +425,7 @@ async def send_welcome(message: types.Message):
 
                     seller_message = (
                         f"🛒 <b>Покупатель начал сделку!</b>\n\n"
-                        + quote_html
+                        + deal_header_quote + "\n" + html.escape(deal_body_text)
                         + nft_links_display
                         + (
                             "\n\n💳 <b>Ожидание оплаты:</b>\n"
@@ -428,7 +442,7 @@ async def send_welcome(message: types.Message):
                     
                     seller_keyboard = types.InlineKeyboardMarkup(
                         inline_keyboard=[
-                            [types.InlineKeyboardButton(text="Чат с покупателем💭", url=buyer_link)]
+                            [types.InlineKeyboardButton(text="✉️ Чат с Покупателем", url=buyer_link)]
                         ]
                     )
 
@@ -533,13 +547,7 @@ async def confirm_payment(message: types.Message):
             else:
                 wallets_info = "\n\n⚠️ <b>Внимание:</b> У продавца нет добавленного TON-кошелька!"
 
-            message_text = (
-                f"✅️ <b>Оплата подтверждена</b> для сделки #{deal_code}\n\n"
-                f"💰 <b>Сумма:</b> <code>{deal_data['amount']} TON</code>\n"
-                f"📜 <b>Описание:</b> <code>{deal_data['description']}</code>\n\n"
-                "Пожалуйста, подтвердите получение подарка после того, как продавец его отправит."
-                + wallets_info
-            )
+            message_text = "✅️"
 
             buttons = types.InlineKeyboardMarkup(
                 inline_keyboard=[
@@ -565,17 +573,17 @@ async def confirm_payment(message: types.Message):
                 # Получаем NFT ссылки из сделки
                 nft_links_display = ""
                 if "nft_links" in deal_data and deal_data["nft_links"]:
-                    nft_links_display = "\n\n🔗 <b>Ссылки на NFT:</b>\n"
+                    nft_links_display = "\n\n🎁 <b>NFT-Подарки в сделке:</b>\n"
                     for i, link in enumerate(deal_data["nft_links"], 1):
                         nft_links_display += f"{i}. {link}\n"
 
                 seller_message = (
                     f"✅ <b>Оплата по сделке #{deal_code} получена!</b>\n\n"
-                    f"<code>Сделка: #{deal_code}</code>\n"
-                    f"<code>Покупатель: {buyer_id}</code>\n"
-                    f"<code>Username: @{buyer_username if buyer_username else 'нет username'}</code>\n"
-                    f"<code>Сумма: {deal_data['amount']} TON</code>\n"
-                    f"<code>Товар: {deal_data['description']}</code>"
+                    f"Сделка: #{deal_code}\n"
+                    f"Покупатель: {buyer_id}\n"
+                    f"Username: @{buyer_username if buyer_username else 'нет username'}\n"
+                    f"Сумма: {deal_data['amount']} TON\n"
+                    f"Товар: {deal_data['description']}"
                     + nft_links_display +
                     f"\n\n<b>🎁 Передайте подарок покупателю</b>\n"
                     f"Нажмите кнопку ниже, чтобы перейти в чат с покупателем"
@@ -583,9 +591,9 @@ async def confirm_payment(message: types.Message):
 
                 seller_keyboard = types.InlineKeyboardMarkup(
                     inline_keyboard=[
-                        [types.InlineKeyboardButton(text="Чат с покупателем💭", url=buyer_link)],
-                        [types.InlineKeyboardButton(text="Подтвердить передачу покупателю ✅", callback_data=f"confirm_gift_sent_{deal_code}")],
-                        [types.InlineKeyboardButton(text="Поддержка🛡️", callback_data="support")]
+                        [types.InlineKeyboardButton(text="✉️ Чат с Покупателем", url=buyer_link)],
+                        [types.InlineKeyboardButton(text="☑️ Подтвердить передачу", callback_data=f"confirm_gift_sent_{deal_code}")],
+                        [types.InlineKeyboardButton(text="🆘 Поддержка", callback_data="support")]
                     ]
                 )
 
@@ -1123,9 +1131,9 @@ async def back_to_deal(callback: types.CallbackQuery):
             message_text = (
                 f"💳 <b>Информация о сделке #{deal_code}</b>\n\n"
                 f"👤 <b>Вы покупатель</b> в сделке.\n"
-                f"📌 Продавец: <b>{seller_id}</b>\n"
+                f"📌 Продавец: <b>{('@' + deal_data.get('seller_username')) if deal_data.get('seller_username') else seller_id}</b>\n"
                 f"• Успешные сделки: 0\n\n"
-                f"• Вы покупаете: {description}\n\n"
+                f"{render_purchase_block(deal_data)}\n\n"
                 f"🏦 <b>Адрес для оплаты:</b>\n"
                 f"<code>{TON_WALLET_ADDRESS}</code>\n\n"
                 f"💰 <b>Сумма к оплате:</b>\n"
@@ -1198,7 +1206,7 @@ async def nft_done(callback: types.CallbackQuery):
     else:
         description = "Продажа товара"
     
-    random_start = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+    random_start = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
     user_data[user_id]["link"] = f"https://t.me/{BOT_USERNAME}?start={random_start}"
 
     selected_wallet_type = user_data[user_id].get("selected_wallet")
@@ -1223,6 +1231,7 @@ async def nft_done(callback: types.CallbackQuery):
         "nft_links": nft_links,
         "link": user_data[user_id]["link"],
         "seller_id": user_id,
+        "seller_username": callback.from_user.username,
         "random_start": random_start,
         "seller_wallets": seller_wallets
     }
@@ -1249,18 +1258,17 @@ async def nft_done(callback: types.CallbackQuery):
     
     nft_display = ""
     if nft_links:
-        nft_display = "\n\n🔗 <b>Ссылки на NFT:</b>\n"
+        nft_display = "\n\n🎁 <b>NFT-Подарки в сделке:</b>\n"
         for i, link in enumerate(nft_links, 1):
             nft_display += f"{i}. {link}\n"
 
-    deal_quote = (
-        f"🧾 Сделка: #{random_start}\n"
+    deal_header_quote = f"<blockquote>🧾 Сделка: #{random_start}</blockquote>"
+    deal_body_text = (
         "🆔 Покупателя: (ожидается)\n"
         "   · Username: (ожидается)\n"
         f"💸 Сумма: {deal_data['amount']} TON\n"
         f"🎁 Товар: {deal_data['description']}"
     )
-    quote_html = html.escape(deal_quote)
 
     share_text = (
         f"🧾 Сделка: #{random_start}\n"
@@ -1280,7 +1288,7 @@ async def nft_done(callback: types.CallbackQuery):
     await send_or_edit_message(
         user_id,
         "✅ <b>Сделка успешно создана!</b>\n\n"
-        + quote_html
+        + deal_header_quote + "\n" + html.escape(deal_body_text)
         + nft_display
         + f"\n🔗 <b>Ссылка для покупателя:</b> {deal_data['link']}"
         + wallets_display,
@@ -1482,10 +1490,9 @@ async def handle_steps(message: types.Message):
             # Сразу переходим к сбору NFT ссылок
             sent_message = await bot.send_message(
                 user_id,
-                "🔗 <b>Отправьте ссылки на NFT (если это NFT сделка)</b>\n\n"
+                "🔗 <b>Отправьте ссылки на NFT</b>\n\n"
                 "Отправляйте каждую ссылку отдельным сообщением.\n"
-                "Когда все ссылки будут отправлены, нажмите кнопку '✅ Готово'.\n\n"
-                "<b>Список отправленных ссылок:</b>\n"
+                                "<b>Список NFT-Подарков в сделке:</b>\n"
                 "Пока нет ссылок",
                 reply_markup=nft_ready_keyboard,
                 parse_mode="HTML"
@@ -1523,10 +1530,9 @@ async def handle_steps(message: types.Message):
                     await bot.edit_message_text(
                         chat_id=user_id,
                         message_id=nft_message_id,
-                        text=f"🔗 <b>Отправьте ссылки на NFT (если это NFT сделка)</b>\n\n"
+                        text=f"🔗 <b>Отправьте ссылки на NFT</b>\n\n"
                              f"Отправляйте каждую ссылку отдельным сообщением.\n"
-                             f"Когда все ссылки будут отправлены, нажмите кнопку '✅ Готово'.\n\n"
-                             f"<b>Список отправленных ссылок:</b>\n"
+                             f"<b>Список NFT-Подарков в сделке:</b>\n"
                              f"{links_text}",
                         reply_markup=nft_ready_keyboard,
                         parse_mode="HTML"
