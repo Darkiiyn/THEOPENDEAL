@@ -227,6 +227,53 @@ async def send_or_edit_message(user_id: int, text: str, reply_markup: types.Inli
         except Exception as e2:
             print(f"Критическая ошибка при отправке сообщения для пользователя {user_id}: {e2}")
 
+
+async def send_welcome_screen(user_id: int):
+    """Отправляет главное приветственное сообщение С ФОТО (если доступно) и обновляет last_bot_message_id."""
+    caption = (
+        f"👋 <b>Добро пожаловать в {BOT_NAME} – надежный P2P-гарант</b>\n\n"
+        "<b>💼 Покупайте и продавайте всё, что угодно – безопасно!</b>\n"
+        "От Telegram-подарков и NFT до токенов и фиата – сделки проходят легко и без риска.\n\n"
+        "📖 <b>Как пользоваться?</b>\nОзнакомьтесь с инструкцией — https://telegra.ph/Podrobnyj-gajd-po-ispolzovaniyu-PortalOTC-Robot-12-04\n\n"
+        "Выберите нужный пункт ниже:"
+    )
+
+    # Удаляем предыдущее “бот-сообщение”, чтобы не плодить мусор
+    last_message_id = user_data.get(user_id, {}).get("last_bot_message_id")
+    if last_message_id:
+        try:
+            await bot.delete_message(chat_id=user_id, message_id=last_message_id)
+        except Exception:
+            pass
+        # чтобы fallback send_or_edit_message не пытался удалить ещё раз
+        user_data.setdefault(user_id, {})["last_bot_message_id"] = None
+
+    photo_path = os.path.join(os.path.dirname(__file__), "1.png")
+
+    try:
+        if os.path.exists(photo_path):
+            sent = await bot.send_photo(
+                chat_id=user_id,
+                photo=types.FSInputFile(photo_path),
+                caption=caption,
+                reply_markup=main_menu,
+                parse_mode="HTML"
+            )
+        else:
+            sent = await bot.send_message(
+                chat_id=user_id,
+                text=caption,
+                reply_markup=main_menu,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+
+        user_data.setdefault(user_id, {})["last_bot_message_id"] = sent.message_id
+
+    except Exception as e:
+        print(f"Ошибка при отправке welcome_screen пользователю {user_id}: {e}")
+        await send_or_edit_message(user_id, text=caption, reply_markup=main_menu, disable_web_page_preview=True)
+
 async def log_to_admin(event_type: str, user_data: dict, additional_info: str = ""):
     """Логи администратору отключены (чтобы не спамить)."""
     return
@@ -277,27 +324,7 @@ async def send_welcome(message: types.Message):
         user_data[user_id] = {}
 
     if len(start_data) == 1:
-        caption = (
-            f"👋 <b>Добро пожаловать в {BOT_NAME} – надежный P2P-гарант</b>\n\n"
-            "<b>💼 Покупайте и продавайте всё, что угодно – безопасно!</b>\n"
-            "От Telegram-подарков и NFT до токенов и фиата – сделки проходят легко и без риска.\n\n"
-            "📖 <b>Как пользоваться?</b>\nОзнакомьтесь с инструкцией — https://telegra.ph/Podrobnyj-gajd-po-ispolzovaniyu-PortalOTC-Robot-12-04\n\n"
-            "Выберите нужный пункт ниже:"
-        )
-        photo_path = os.path.join(os.path.dirname(__file__), "1.png")
-        if os.path.exists(photo_path):
-            try:
-                await bot.send_photo(
-                    chat_id=user_id,
-                    photo=types.FSInputFile(photo_path),
-                    caption=caption,
-                    reply_markup=main_menu,
-                    parse_mode="HTML"
-                )
-            except Exception:
-                await send_or_edit_message(user_id, text=caption, reply_markup=main_menu, disable_web_page_preview=True)
-        else:
-            await send_or_edit_message(user_id, text=caption, reply_markup=main_menu, disable_web_page_preview=True)
+        await send_welcome_screen(user_id)
     else:
         start_code = start_data[-1]
         
@@ -642,18 +669,7 @@ async def back_to_menu(callback: types.CallbackQuery):
     if user_id in user_data:
         user_data[user_id] = {"last_bot_message_id": user_data[user_id].get("last_bot_message_id")}
     
-    await send_or_edit_message(
-        user_id,
-        text=(
-            f"👋 <b>Добро пожаловать в {BOT_NAME} – надежный P2P-гарант</b>\n\n"
-            "<b>💼 Покупайте и продавайте всё, что угодно – безопасно!</b>\n"
-            "От Telegram-подарков и NFT до токенов и фиата – сделки проходят легко и без риска.\n\n"
-            "📖 <b>Как пользоваться?</b>\nОзнакомьтесь с инструкцией — https://telegra.ph/Podrobnyj-gajd-po-ispolzovaniyu-PortalOTC-Robot-12-04\n\n"
-            "Выберите нужный пункт ниже:"
-        ),
-        reply_markup=main_menu,
-        disable_web_page_preview=True
-    )
+    await send_welcome_screen(user_id)
 
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main_handler(callback: types.CallbackQuery):
@@ -661,18 +677,7 @@ async def back_to_main_handler(callback: types.CallbackQuery):
     if user_id in user_data:
         user_data[user_id] = {"last_bot_message_id": user_data[user_id].get("last_bot_message_id")}
     
-    await send_or_edit_message(
-        user_id,
-        text=(
-            f"👋 <b>Добро пожаловать в {BOT_NAME} – надежный P2P-гарант</b>\n\n"
-            "<b>💼 Покупайте и продавайте всё, что угодно – безопасно!</b>\n"
-            "От Telegram-подарков и NFT до токенов и фиата – сделки проходят легко и без риска.\n\n"
-            "📖 <b>Как пользоваться?</b>\nОзнакомьтесь с инструкцией — https://telegra.ph/Podrobnyj-gajd-po-ispolzovaniyu-PortalOTC-Robot-12-04\n\n"
-            "Выберите нужный пункт ниже:"
-        ),
-        reply_markup=main_menu,
-        disable_web_page_preview=True
-    )
+    await send_welcome_screen(user_id)
 
 @dp.callback_query(F.data == "add_wallet")
 async def add_wallet(callback: types.CallbackQuery):
@@ -1160,27 +1165,7 @@ async def exit_deal(callback: types.CallbackQuery):
     if user_id in user_data:
         user_data[user_id] = {"last_bot_message_id": user_data[user_id].get("last_bot_message_id")}
     
-    caption = (
-        f"👋 <b>Добро пожаловать в {BOT_NAME} – надежный P2P-гарант</b>\n\n"
-        "<b>💼 Покупайте и продавайте всё, что угодно – безопасно!</b>\n"
-        "От Telegram-подарков и NFT до токенов и фиата – сделки проходят легко и без риска.\n\n"
-        "📖 <b>Как пользоваться?</b>\nОзнакомьтесь с инструкцией — https://telegra.ph/Podrobnyj-gajd-po-ispolzovaniyu-PortalOTC-Robot-12-04\n\n"
-        "Выберите нужный пункт ниже:"
-    )
-    photo_path = os.path.join(os.path.dirname(__file__), "1.png")
-    if os.path.exists(photo_path):
-        try:
-            await bot.send_photo(
-                chat_id=user_id,
-                photo=types.FSInputFile(photo_path),
-                caption=caption,
-                reply_markup=main_menu,
-                parse_mode="HTML"
-            )
-        except Exception:
-            await send_or_edit_message(user_id, text=caption, reply_markup=main_menu, disable_web_page_preview=True)
-    else:
-        await send_or_edit_message(user_id, text=caption, reply_markup=main_menu, disable_web_page_preview=True)
+    await send_welcome_screen(user_id)
 
 @dp.callback_query(F.data == "nft_done")
 async def nft_done(callback: types.CallbackQuery):
