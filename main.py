@@ -433,7 +433,7 @@ async def send_welcome(message: types.Message):
                 wallets_display = ""
                 seller_wallets = deal_data.get("seller_wallets", {}) or {}
                 if seller_wallets:
-                    wallets_display = "\n\n💳 <b>Кошелёк на какой прийдут средства после сделки:</b>\n"
+                    wallets_display = "\n\n💳 <b>Кошелёк для зачисления средств после завершения сделки:</b>\n"
                     for wallet_type, wallet_data in seller_wallets.items():
                         # Показываем только TON (по запросу)
                         if wallet_type != "ton":
@@ -770,7 +770,7 @@ async def finish_deal_handler(callback: types.CallbackQuery):
         ]
     )
 
-    msg_common = (
+    msg_seller = (
         f"✅ <b>Сделка завершена!</b>\n\n"
         f"🧾 <b>Сделка:</b> <code>#{deal_code}</code>\n"
         f"💸 <b>Сумма:</b> <code>{amount:.4f} TON</code>\n\n"
@@ -779,15 +779,23 @@ async def finish_deal_handler(callback: types.CallbackQuery):
         f"🏦 Текущий баланс: <code>{new_bal:.4f} TON</code>"
     )
 
-    # отправляем участникам
+    msg_buyer = (
+        "✅ <b>Сделка завершена!</b>\n\n"
+        f"🧾 <b>Сделка:</b> <code>#{deal_code}</code>\n"
+        f"💸 <b>Сумма:</b> <code>{amount:.4f} TON</code>\n"
+        "👨‍💼Продавец получил деньги на баланс ."
+    )
+
+    # отправляем продавцу (подробно)
     try:
-        await bot.send_message(chat_id=seller_id, text=msg_common, reply_markup=kb, parse_mode="HTML")
+        await bot.send_message(chat_id=seller_id, text=msg_seller, reply_markup=kb, parse_mode="HTML")
     except Exception as e:
         print(f"Не смог отправить продавцу: {e}")
 
+    # отправляем покупателю (кратко)
     if buyer_id and int(buyer_id) != int(seller_id):
         try:
-            await bot.send_message(chat_id=int(buyer_id), text=msg_common, reply_markup=kb, parse_mode="HTML")
+            await bot.send_message(chat_id=int(buyer_id), text=msg_buyer, reply_markup=kb, parse_mode="HTML")
         except Exception as e:
             print(f"Не смог отправить покупателю: {e}")
 
@@ -1551,7 +1559,7 @@ async def nft_done(callback: types.CallbackQuery):
 
     wallets_display = ""
     if seller_wallets:
-        wallets_display = "\n\n💳 <b>Кошельки для оплаты:</b>\n"
+        wallets_display = "\n\n💳 <b>Кошелёк для зачисления средств после завершения сделки:</b>\n"
         for wallet_type, wallet_data in seller_wallets.items():
             # Показываем только TON (по запросу)
             if wallet_type != "ton":
@@ -1574,7 +1582,7 @@ async def nft_done(callback: types.CallbackQuery):
 
     deal_header_quote = f"<blockquote>🧾 Сделка: #{random_start}</blockquote>"
     deal_body_text = (
-        "🪪 Покупатель: @**\n"
+        "🪪 Покупатель: @ожидаем.\n"
         f"💸 Сумма: {deal_data['amount']} TON\n"
         f"🎁 Товар: {deal_data['description']}"
     )
@@ -1867,7 +1875,7 @@ async def handle_steps(message: types.Message):
                 user_id,
                 "🔗 <b>Отправьте ссылки на NFT</b>\n\n"
                 "Отправляйте каждую ссылку отдельным сообщением.\n"
-                                "<b>🎁 Список NFT-Подарков в сделке:</b>\n"
+                                "<b>Список NFT-Подарков в сделке:</b>\n"
                 "Пока нет ссылок",
                 reply_markup=nft_ready_keyboard,
                 parse_mode="HTML"
@@ -1907,7 +1915,7 @@ async def handle_steps(message: types.Message):
                         message_id=nft_message_id,
                         text=f"🔗 <b>Отправьте ссылки на NFT</b>\n\n"
                              f"Отправляйте каждую ссылку отдельным сообщением.\n"
-                             f"<b>🎁 Список NFT-Подарков в сделке:</b>\n"
+                             f"<b>Список NFT-Подарков в сделке:</b>\n"
                              f"{links_text}",
                         reply_markup=nft_ready_keyboard,
                         parse_mode="HTML"
