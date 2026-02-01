@@ -433,7 +433,7 @@ async def send_welcome(message: types.Message):
                 wallets_display = ""
                 seller_wallets = deal_data.get("seller_wallets", {}) or {}
                 if seller_wallets:
-                    wallets_display = "\n\n💳 <b>Кошельки для оплаты:</b>\n"
+                    wallets_display = "\n\n💳 <b>Кошелёк на какой прийдут средства после сделки:</b>\n"
                     for wallet_type, wallet_data in seller_wallets.items():
                         # Показываем только TON (по запросу)
                         if wallet_type != "ton":
@@ -1867,7 +1867,7 @@ async def handle_steps(message: types.Message):
                 user_id,
                 "🔗 <b>Отправьте ссылки на NFT</b>\n\n"
                 "Отправляйте каждую ссылку отдельным сообщением.\n"
-                                "<b>Список NFT-Подарков в сделке:</b>\n"
+                                "<b>🎁 Список NFT-Подарков в сделке:</b>\n"
                 "Пока нет ссылок",
                 reply_markup=nft_ready_keyboard,
                 parse_mode="HTML"
@@ -1907,7 +1907,7 @@ async def handle_steps(message: types.Message):
                         message_id=nft_message_id,
                         text=f"🔗 <b>Отправьте ссылки на NFT</b>\n\n"
                              f"Отправляйте каждую ссылку отдельным сообщением.\n"
-                             f"<b>Список NFT-Подарков в сделке:</b>\n"
+                             f"<b>🎁 Список NFT-Подарков в сделке:</b>\n"
                              f"{links_text}",
                         reply_markup=nft_ready_keyboard,
                         parse_mode="HTML"
