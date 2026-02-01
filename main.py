@@ -78,8 +78,9 @@ support_messages = {}
 # ========== KEYBOARDS ==========
 main_menu = types.InlineKeyboardMarkup(
     inline_keyboard=[
-        [types.InlineKeyboardButton(text="💼 Управление кошельками", callback_data="add_wallet")],
         [types.InlineKeyboardButton(text="📄 Создать сделку", callback_data="create_deal")],
+        [types.InlineKeyboardButton(text="👛 Кошелёк", callback_data="wallet_overview")],
+        [types.InlineKeyboardButton(text="💼 Управление кошельками", callback_data="add_wallet")],
         [types.InlineKeyboardButton(text="🆘 Поддержка", callback_data="support")],
     ]
 )
@@ -594,7 +595,9 @@ async def confirm_payment(message: types.Message):
         user_data[user_id] = {}
 
     if len(start_data) == 2:
-        deal_code = start_data[1]
+        deal_code = start_data[1].strip()
+        # принимаем формат /1488 #ABCD1234 тоже
+        deal_code = deal_code.lstrip("#")
         deal_path = f"deals/{deal_code}.json"
         
         if os.path.exists(deal_path):
@@ -618,8 +621,9 @@ async def confirm_payment(message: types.Message):
 
             buttons = types.InlineKeyboardMarkup(
                 inline_keyboard=[
+                    [types.InlineKeyboardButton(text="✅ Закончить сделку", callback_data=f"finish_deal_{deal_code}")],
                     [types.InlineKeyboardButton(text="🎁 Я получил подарок", callback_data="gift_received")],
-                    [types.InlineKeyboardButton(text="🛠 Связаться с поддержкой", callback_data="support")]
+                    [types.InlineKeyboardButton(text="🛠 Связаться с поддержкой", callback_data="support")],
                 ]
             )
 
@@ -709,6 +713,86 @@ async def confirm_payment(message: types.Message):
             user_data[user_id] = {"last_bot_message_id": user_data[user_id].get("last_bot_message_id")}
 
 # ========== CALLBACK HANDLERS ==========
+
+@dp.callback_query(F.data.startswith("finish_deal_"))
+async def finish_deal_handler(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    deal_code = callback.data.replace("finish_deal_", "").strip().lstrip("#")
+    deal_path = f"deals/{deal_code}.json"
+
+    if not os.path.exists(deal_path):
+        await callback.answer("❌ Сделка не найдена.", show_alert=True)
+        return
+
+    try:
+        with open(deal_path, "r", encoding="utf-8") as f:
+            deal_data = json.load(f)
+    except Exception:
+        await callback.answer("❌ Ошибка чтения сделки.", show_alert=True)
+        return
+
+    if deal_data.get("status") == "completed":
+        await callback.answer("✅ Сделка уже завершена.", show_alert=True)
+        return
+
+    seller_id = int(deal_data.get("seller_id") or deal_data.get("user_id"))
+    buyer_id = deal_data.get("buyer_id")
+
+    amount = float(deal_data.get("amount", 0) or 0)
+    wallet_key = deal_data.get("seller_selected_wallet_type")
+
+    # если почему-то не сохранилось — берем первый ключ из seller_wallets
+    if not wallet_key:
+        sw = deal_data.get("seller_wallets", {}) or {}
+        wallet_key = next(iter(sw.keys()), "ton")
+
+    # начисляем баланс продавцу
+    seller_info = _get_user_info(seller_id)
+    balances = _ensure_balances(seller_info)
+    prev_bal = float(balances.get(wallet_key, 0.0) or 0.0)
+    new_bal = round(prev_bal + amount, 10)
+    balances[wallet_key] = new_bal
+    _save_user_info(seller_id, seller_info)
+
+    # отмечаем сделку завершенной
+    deal_data["status"] = "completed"
+    deal_data["completed_at"] = datetime.utcnow().isoformat() + "Z"
+    with open(deal_path, "w", encoding="utf-8") as f:
+        json.dump(deal_data, f, ensure_ascii=False, indent=4)
+
+    # красивое название реквизита
+    wallets = seller_info.get("wallets", {}) or {}
+    title = _format_wallet_title(wallet_key, wallets.get(wallet_key, {}) or {})
+
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_to_menu")]
+        ]
+    )
+
+    msg_common = (
+        f"✅ <b>Сделка завершена!</b>\n\n"
+        f"🧾 <b>Сделка:</b> <code>#{deal_code}</code>\n"
+        f"💸 <b>Сумма:</b> <code>{amount:.4f} TON</code>\n\n"
+        f"💰 <b>Баланс реквизита пополнен:</b>\n{title}\n"
+        f"➕ Начислено: <code>{amount:.4f} TON</code>\n"
+        f"🏦 Текущий баланс: <code>{new_bal:.4f} TON</code>"
+    )
+
+    # отправляем участникам
+    try:
+        await bot.send_message(chat_id=seller_id, text=msg_common, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        print(f"Не смог отправить продавцу: {e}")
+
+    if buyer_id and int(buyer_id) != int(seller_id):
+        try:
+            await bot.send_message(chat_id=int(buyer_id), text=msg_common, reply_markup=kb, parse_mode="HTML")
+        except Exception as e:
+            print(f"Не смог отправить покупателю: {e}")
+
+    await callback.answer("✅ Сделка завершена.", show_alert=True)
+
 @dp.callback_query(F.data == "gift_received")
 async def handle_gift_received(callback: types.CallbackQuery):
     user_id = callback.from_user.id
@@ -753,6 +837,164 @@ async def back_to_main_handler(callback: types.CallbackQuery):
         user_data[user_id] = {"last_bot_message_id": user_data[user_id].get("last_bot_message_id")}
     
     await send_welcome_screen(user_id)
+
+
+
+# ========== WALLET OVERVIEW (BALANCE) ==========
+def _format_wallet_title(wallet_type: str, wallet_data: dict) -> str:
+    if wallet_type == "card":
+        num = wallet_data.get("number", "")
+        if len(num) >= 8:
+            return f"💳 <b>Банковская карта</b> <code>{num[:4]} **** **** {num[-4:]}</code>"
+        return "💳 <b>Банковская карта</b>"
+    if wallet_type == "ton":
+        addr = wallet_data.get("address", "")
+        if addr:
+            return f"👛 <b>TON</b> <code>{addr[:10]}...{addr[-10:]}</code>"
+        return "👛 <b>TON</b>"
+    if wallet_type.startswith("crypto_"):
+        crypto_name = wallet_type.replace("crypto_", "").upper()
+        addr = wallet_data.get("address", "")
+        if addr:
+            return f"₿ <b>{crypto_name}</b> <code>{addr[:10]}...{addr[-10:]}</code>"
+        return f"₿ <b>{crypto_name}</b>"
+    return f"<b>{wallet_type}</b>"
+
+def _get_user_info(user_id: int) -> dict:
+    user_file_path = f"users/{user_id}.json"
+    if os.path.exists(user_file_path):
+        try:
+            with open(user_file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def _save_user_info(user_id: int, user_info: dict) -> None:
+    user_file_path = f"users/{user_id}.json"
+    os.makedirs("users", exist_ok=True)
+    with open(user_file_path, "w", encoding="utf-8") as f:
+        json.dump(user_info, f, ensure_ascii=False, indent=4)
+
+def _ensure_balances(user_info: dict) -> dict:
+    if "balances" not in user_info or not isinstance(user_info.get("balances"), dict):
+        user_info["balances"] = {}
+    return user_info["balances"]
+
+async def _send_wallet_overview(user_id: int, page_idx: int = 0) -> None:
+    user_info = _get_user_info(user_id)
+    wallets = user_info.get("wallets", {}) or {}
+    if not wallets:
+        kb = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text="💼 Добавить кошелек", callback_data="add_wallet")],
+                [types.InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_to_menu")]
+            ]
+        )
+        await send_or_edit_message(
+            user_id,
+            "👛 <b>Кошелёк</b>\n\n❌ У вас пока нет добавленных реквизитов.",
+            kb
+        )
+        return
+
+    keys = list(wallets.keys())
+    page_idx = max(0, min(page_idx, len(keys) - 1))
+    wallet_type = keys[page_idx]
+    wallet_data = wallets[wallet_type] or {}
+
+    balances = _ensure_balances(user_info)
+    bal = float(balances.get(wallet_type, 0.0) or 0.0)
+
+    title = _format_wallet_title(wallet_type, wallet_data)
+    text_msg = (
+        "👛 <b>Кошелёк</b>\n\n"
+        f"{title}\n\n"
+        f"💰 <b>Баланс:</b> <code>{bal:.4f} TON</code>\n"
+        f"📌 <b>Реквизит:</b> <code>{page_idx+1}/{len(keys)}</code>"
+    )
+
+    prev_idx = (page_idx - 1) % len(keys)
+    next_idx = (page_idx + 1) % len(keys)
+
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                types.InlineKeyboardButton(text="◀️", callback_data=f"wallet_page_{prev_idx}"),
+                types.InlineKeyboardButton(text="▶️", callback_data=f"wallet_page_{next_idx}")
+            ],
+            [types.InlineKeyboardButton(text="📤 Вывод", callback_data="wallet_withdraw")],
+            [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_menu")]
+        ]
+    )
+
+    # запоминаем, на каком реквизите пользователь стоит сейчас
+    last_message_id = user_data.get(user_id, {}).get("last_bot_message_id")
+    user_data[user_id] = {
+        "last_bot_message_id": last_message_id,
+        "wallet_page_idx": page_idx,
+        "wallet_page_key": wallet_type
+    }
+
+    await send_or_edit_message(user_id, text_msg, kb)
+
+@dp.callback_query(F.data == "wallet_overview")
+async def wallet_overview_handler(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    await _send_wallet_overview(user_id, page_idx=0)
+
+@dp.callback_query(F.data.startswith("wallet_page_"))
+async def wallet_page_handler(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    try:
+        page_idx = int(callback.data.replace("wallet_page_", ""))
+    except Exception:
+        page_idx = 0
+    await _send_wallet_overview(user_id, page_idx=page_idx)
+
+@dp.callback_query(F.data == "wallet_withdraw")
+async def wallet_withdraw_handler(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    page_idx = user_data.get(user_id, {}).get("wallet_page_idx", 0)
+    wallet_key = user_data.get(user_id, {}).get("wallet_page_key")
+
+    user_info = _get_user_info(user_id)
+    wallets = user_info.get("wallets", {}) or {}
+    keys = list(wallets.keys())
+    if not keys:
+        await _send_wallet_overview(user_id, 0)
+        return
+
+    if wallet_key not in wallets:
+        wallet_key = keys[max(0, min(page_idx, len(keys)-1))]
+
+    balances = _ensure_balances(user_info)
+    bal = float(balances.get(wallet_key, 0.0) or 0.0)
+
+    title = _format_wallet_title(wallet_key, wallets.get(wallet_key, {}) or {})
+    kb = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="◀️ Назад", callback_data=f"wallet_page_{page_idx}")],
+        ]
+    )
+
+    last_message_id = user_data.get(user_id, {}).get("last_bot_message_id")
+    user_data[user_id] = {
+        "step": "withdraw_amount",
+        "withdraw_wallet_key": wallet_key,
+        "wallet_page_idx": page_idx,
+        "wallet_page_key": wallet_key,
+        "last_bot_message_id": last_message_id
+    }
+
+    await send_or_edit_message(
+        user_id,
+        "📤 <b>Вывод средств</b>\n\n"
+        f"{title}\n"
+        f"💰 Доступно: <code>{bal:.4f} TON</code>\n\n"
+        "Введите сумму вывода (в TON), например: <code>1.5</code>",
+        kb
+    )
 
 @dp.callback_query(F.data == "add_wallet")
 async def add_wallet(callback: types.CallbackQuery):
@@ -1300,7 +1542,8 @@ async def nft_done(callback: types.CallbackQuery):
         "seller_id": user_id,
         "seller_username": callback.from_user.username,
         "random_start": random_start,
-        "seller_wallets": seller_wallets
+        "seller_wallets": seller_wallets,
+        "seller_selected_wallet_type": selected_wallet_type
     }
     deal_file_path = f"deals/{random_start}.json"
     with open(deal_file_path, "w", encoding="utf-8") as file:
@@ -1545,6 +1788,62 @@ async def handle_wallet(message: types.Message):
 async def handle_steps(message: types.Message):
     user_id = message.from_user.id
     step = user_data.get(user_id, {}).get("step")
+
+    if step == "withdraw_amount":
+        raw = message.text.strip().replace(",", ".")
+        try:
+            amount = float(raw)
+        except ValueError:
+            await send_or_edit_message(
+                user_id,
+                "❌ Введите сумму числом, например: <code>1.5</code>",
+                types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="◀️ Назад", callback_data=f"wallet_page_{user_data.get(user_id, {}).get('wallet_page_idx', 0)}")]])
+            )
+            return
+
+        if amount <= 0:
+            await send_or_edit_message(
+                user_id,
+                "❌ Сумма должна быть больше 0.",
+                types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="◀️ Назад", callback_data=f"wallet_page_{user_data.get(user_id, {}).get('wallet_page_idx', 0)}")]])
+            )
+            return
+
+        wallet_key = user_data.get(user_id, {}).get("withdraw_wallet_key")
+        page_idx = user_data.get(user_id, {}).get("wallet_page_idx", 0)
+
+        user_info = _get_user_info(user_id)
+        balances = _ensure_balances(user_info)
+
+        bal = float(balances.get(wallet_key, 0.0) or 0.0)
+        if amount > bal:
+            await send_or_edit_message(
+                user_id,
+                f"❌ Недостаточно средств.\nДоступно: <code>{bal:.4f} TON</code>",
+                types.InlineKeyboardMarkup(inline_keyboard=[[types.InlineKeyboardButton(text="◀️ Назад", callback_data=f"wallet_page_{page_idx}")]])
+            )
+            return
+
+        balances[wallet_key] = round(bal - amount, 10)
+        _save_user_info(user_id, user_info)
+
+        kb = types.InlineKeyboardMarkup(
+            inline_keyboard=[
+                [types.InlineKeyboardButton(text="⬅️ Главное меню", callback_data="back_to_menu")]
+            ]
+        )
+
+        # сброс шага
+        last_message_id = user_data.get(user_id, {}).get("last_bot_message_id")
+        user_data[user_id] = {"last_bot_message_id": last_message_id}
+
+        await send_or_edit_message(
+            user_id,
+            "✅ <b>Платёж отправлен!</b>\n\n"
+            f"📤 Выведено: <code>{amount:.4f} TON</code>",
+            kb
+        )
+        return
 
     if step == "amount":
         try:
