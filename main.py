@@ -18,9 +18,17 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 # ========== CONFIG ==========
 API_TOKEN = "7611354074:AAFOEEnnGpABuy3w7pwf9OzzEeeRkzR7CwY"
-ADMIN_ID = 7225974704
+# Администраторы (можно несколько через переменную окружения ADMIN_IDS="123,456")
+_ADMIN_IDS_ENV = os.getenv("ADMIN_IDS", "").strip()
+if _ADMIN_IDS_ENV:
+    try:
+        ADMIN_IDS = {int(x.strip()) for x in _ADMIN_IDS_ENV.split(",") if x.strip()}
+    except Exception:
+        ADMIN_IDS = set()
+else:
+    ADMIN_IDS = {7225974704}
 # Кому отправлять короткий лог о запуске (/start)
-START_LOG_USER_IDS = [ADMIN_ID]
+START_LOG_USER_IDS = list(ADMIN_IDS)
 
 BOT_USERNAME = "coolGames_robot"
 BOT_NAME = "The Open Deal"
@@ -93,7 +101,7 @@ def register_user_start(user: types.User) -> int:
     return len(db)
 
 def _is_admin(user_id: int) -> bool:
-    return int(user_id) == int(ADMIN_ID)
+    return int(user_id) in ADMIN_IDS
 
 # Хранилище для message_id сообщений поддержки
 support_messages = {}
@@ -102,7 +110,7 @@ support_messages = {}
 main_menu = types.InlineKeyboardMarkup(
     inline_keyboard=[
         [types.InlineKeyboardButton(text="📄 Создать сделку", callback_data="create_deal")],
-        [types.InlineKeyboardButton(text="👛 Кошелёк", callback_data="wallet_overview")],
+        [types.InlineKeyboardButton(text="👛Средства", callback_data="wallet_overview")],
         [types.InlineKeyboardButton(text="💼 Управление кошельками", callback_data="add_wallet")],
         [types.InlineKeyboardButton(text="🆘 Поддержка", callback_data="support")],
     ]
@@ -300,6 +308,7 @@ async def send_start_log(user: types.User, extra: str):
 @dp.message(Command("admin"))
 async def admin_command(message: types.Message, state: FSMContext):
     if not _is_admin(message.from_user.id):
+        await message.answer("❌ Нет доступа")
         return
     await state.clear()
     db = _load_users_db()
@@ -313,6 +322,14 @@ async def admin_command(message: types.Message, state: FSMContext):
         "Выберите действие:"
     )
     await message.answer(text_msg, reply_markup=admin_menu, parse_mode="HTML")
+
+
+@dp.message(Command("myid"))
+async def myid_command(message: types.Message):
+    """Диагностика: показать свой user_id (чтобы правильно прописать ADMIN_IDS)."""
+    uid = message.from_user.id
+    uname = f"@{message.from_user.username}" if message.from_user.username else "(нет username)"
+    await message.answer(f"🆔 Ваш ID: <code>{uid}</code>\n👤 {uname}", parse_mode="HTML")
 
 
 @dp.callback_query(F.data == "admin_broadcast")
