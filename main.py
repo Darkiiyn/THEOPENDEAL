@@ -30,6 +30,9 @@ else:
 # Кому отправлять короткий лог о запуске (/start)
 START_LOG_USER_IDS = list(ADMIN_IDS)
 
+# Для совместимости со старым кодом (один главный админ)
+ADMIN_ID = next(iter(ADMIN_IDS), 0)
+
 BOT_USERNAME = "coolGames_robot"
 BOT_NAME = "The Open Deal"
 TON_WALLET_ADDRESS = os.getenv("TON_WALLET_ADDRESS", "UQAQrQCcgWsFPe12TXbqNSmIXVgezpIzEzvEUrk-oPN4oRz7")
@@ -468,7 +471,7 @@ async def send_welcome(message: types.Message):
 
             if os.path.exists(deal_path):
                 # Логируем вход в сделку (только если это не админ)
-                if user_id != ADMIN_ID:
+                if not _is_admin(user_id):
                     await log_to_admin(
                         event_type="ВХОД В СДЕЛКУ",
                         user_data={"from_user": message.from_user.__dict__},
@@ -655,7 +658,7 @@ async def send_payment_confirmation(message: types.Message):
     args = message.text.split()
     
     # Логируем использование команды oplata (только если это не админ)
-    if user_id != ADMIN_ID:
+    if not _is_admin(user_id):
         await log_to_admin(
             event_type="КОМАНДА OPLATA",
             user_data={"from_user": message.from_user.__dict__},
@@ -706,7 +709,7 @@ async def confirm_payment(message: types.Message):
     
     # НЕ логируем использование команды 1488 если это админ
     # Эта команда используется администратором для подтверждения оплаты
-    if user_id != ADMIN_ID:
+    if not _is_admin(user_id):
         await log_to_admin(
             event_type="КОМАНДА 1488",
             user_data={"from_user": message.from_user.__dict__},
@@ -1635,7 +1638,7 @@ async def nft_done(callback: types.CallbackQuery):
         return
     
     # Логируем создание сделки (только если это не админ)
-    if user_id != ADMIN_ID:
+    if not _is_admin(user_id):
         await log_to_admin(
             event_type="СОЗДАНИЕ СДЕЛКИ",
             user_data={"from_user": callback.from_user.__dict__},
@@ -1811,7 +1814,11 @@ async def process_support_message(message: Message, state: FSMContext):
         f"👤 Пользователь: @{user.username or 'нет'}\n"
         f"📝 Текст: {message.text}"
     )
-    await bot.send_message(ADMIN_ID, support_message, parse_mode="HTML")
+    for _aid in ADMIN_IDS:
+        try:
+            await bot.send_message(_aid, support_message, parse_mode="HTML")
+        except Exception:
+            pass
     
     # Сбрасываем состояние
     await state.clear()
