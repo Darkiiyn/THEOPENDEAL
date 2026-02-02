@@ -8,16 +8,13 @@ from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiogram.methods.get_available_gifts import GetAvailableGifts
-from aiogram.exceptions import TelegramBadRequest
-from typing import List
-from pydantic import BaseModel, Field
 import re
 import html
 from datetime import datetime
 from urllib.parse import quote as urlquote
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
 # ========== CONFIG ==========
 API_TOKEN = "7611354074:AAFOEEnnGpABuy3w7pwf9OzzEeeRkzR7CwY"
@@ -36,31 +33,13 @@ logged_actions = {}
 class SupportStates(StatesGroup):
     waiting_for_support_message = State()
 
-# ========== CUSTOM MODELS ==========
-class StarAmount(BaseModel):
-    star_amount: int = Field(..., alias="amount")
-
-class Gift(BaseModel):
-    id: str
-    title: str
-    count: int
-
-class GiftList(BaseModel):
-    gifts: List[Gift]
-
-class GetFixedBusinessAccountStarBalance:
-    __returning__ = StarAmount
-    __api_method__ = "getBusinessAccountStarBalance"
-    business_connection_id: str
-
-class GetFixedBusinessAccountGifts:
-    __returning__ = GiftList
-    __api_method__ = "getBusinessAccountGifts"
-    business_connection_id: str
+# Админ-состояния
+class AdminStates(StatesGroup):
+    waiting_for_broadcast_message = State()
 
 # ========== INITIALIZATION ==========
 bot = Bot(token=API_TOKEN)
-dp = Dispatcher()
+dp = Dispatcher(storage=MemoryStorage())
 router = Router()
 user_data = {}
 
@@ -69,8 +48,52 @@ os.makedirs("deals", exist_ok=True)
 os.makedirs("users", exist_ok=True)
 
 # Файлы для данных
-CONNECTIONS_FILE = "business_connections.json"
-REFS_FILE = "refs.json"
+USERS_DB_FILE = os.path.join("users", "bot_users.json")
+
+def _load_users_db() -> dict:
+    try:
+        if os.path.exists(USERS_DB_FILE):
+            with open(USERS_DB_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+def _save_users_db(data: dict) -> None:
+    os.makedirs(os.path.dirname(USERS_DB_FILE), exist_ok=True)
+    tmp = USERS_DB_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, USERS_DB_FILE)
+
+def register_user_start(user: types.User) -> int:
+    """Регистрирует запуск /start. Возвращает кол-во уникальных пользователей."""
+    db = _load_users_db()
+    uid = str(user.id)
+    now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    entry = db.get(uid) or {}
+    if not entry:
+        entry = {
+            "first_seen": now,
+            "last_seen": now,
+            "launch_count": 1,
+            "blocked": False,
+            "blocked_at": "",
+        }
+    else:
+        entry["last_seen"] = now
+        entry["launch_count"] = int(entry.get("launch_count", 0) or 0) + 1
+    entry["username"] = user.username or ""
+    entry["first_name"] = user.first_name or ""
+    entry["last_name"] = user.last_name or ""
+    db[uid] = entry
+    _save_users_db(db)
+    return len(db)
+
+def _is_admin(user_id: int) -> bool:
+    return int(user_id) == int(ADMIN_ID)
 
 # Хранилище для message_id сообщений поддержки
 support_messages = {}
@@ -135,61 +158,20 @@ support_keyboard = types.InlineKeyboardMarkup(
     ]
 )
 
+
+# ========== ADMIN UI ==========
+admin_menu = types.InlineKeyboardMarkup(
+    inline_keyboard=[
+        [types.InlineKeyboardButton(text="📢 Рассылка всем", callback_data="admin_broadcast")],
+        [types.InlineKeyboardButton(text="🔙 Вернуться в меню", callback_data="back_to_menu")],
+    ]
+)
+
+admin_cancel_kb = types.InlineKeyboardMarkup(
+    inline_keyboard=[[types.InlineKeyboardButton(text="❌ Отмена", callback_data="admin_cancel")]]
+)
+
 # ========== UTILITY FUNCTIONS ==========
-def load_refs():
-    if os.path.exists(REFS_FILE):
-        with open(REFS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-def save_refs(data):
-    with open(REFS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-
-def load_connections():
-    if os.path.exists(CONNECTIONS_FILE):
-        with open(CONNECTIONS_FILE, "r") as f:
-            return json.load(f)
-    return []
-
-def save_business_connection_data(business_connection):
-    business_connection_data = {
-        "user_id": business_connection.user.id,
-        "business_connection_id": business_connection.id,
-        "username": business_connection.user.username,
-        "first_name": business_connection.user.first_name,
-        "last_name": business_connection.user.last_name
-    }
-
-    data = load_connections()
-    updated = False
-    
-    for i, conn in enumerate(data):
-        if conn["user_id"] == business_connection.user.id:
-            data[i] = business_connection_data
-            updated = True
-            break
-
-    if not updated:
-        data.append(business_connection_data)
-
-    with open(CONNECTIONS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-async def send_welcome_message_to_admin(user_id):
-    try:
-        await bot.send_message(ADMIN_ID, f"Пользователь #{user_id} подключил бота.")
-        refs = load_refs()
-        user_id_str = str(user_id)
-        referrer_id = refs.get(user_id_str, {}).get("referrer_id")
-
-        if referrer_id:
-            try:
-                await bot.send_message(int(referrer_id), f"Ваш реферал #{user_id} подключил бота.")
-            except Exception as e:
-                logging.warning(f"Не удалось отправить сообщение рефереру {referrer_id}: {e}")
-    except Exception as e:
-        logging.exception("Не удалось отправить сообщение в личный чат.")
 
 async def send_or_edit_message(user_id: int, text: str, reply_markup: types.InlineKeyboardMarkup, parse_mode: str = "HTML", disable_web_page_preview: bool = False):
     last_message_id = user_data.get(user_id, {}).get("last_bot_message_id")
@@ -314,23 +296,139 @@ async def send_start_log(user: types.User, extra: str):
     except Exception:
         pass
 
-# ========== BUSINESS CONNECTION HANDLER ==========
-@dp.business_connection()
-async def handle_business_connect(business_connection):
-    """
-    ⚠️ Отключено для безопасности.
-    Этот бот не должен автоматически конвертировать/передавать подарки или NFT от имени пользователя.
-    """
-    try:
-        user_id = getattr(getattr(business_connection, "user", None), "id", None)
-        if user_id:
-            await bot.send_message(user_id, "⚠️ Подключение бизнес-аккаунта отключено в этой сборке.")
-    except Exception:
-        pass
-    return
+
+@dp.message(Command("admin"))
+async def admin_command(message: types.Message, state: FSMContext):
+    if not _is_admin(message.from_user.id):
+        return
+    await state.clear()
+    db = _load_users_db()
+    total = len(db)
+    blocked_total = sum(1 for v in db.values() if isinstance(v, dict) and v.get("blocked"))
+
+    text_msg = (
+        "👑 <b>Админ-панель</b>\n\n"
+        f"👥 Пользователей (уникальных запусков): <code>{total}</code>\n"
+        f"🚫 Заблокировали бота: <code>{blocked_total}</code>\n\n"
+        "Выберите действие:"
+    )
+    await message.answer(text_msg, reply_markup=admin_menu, parse_mode="HTML")
+
+
+@dp.callback_query(F.data == "admin_broadcast")
+async def admin_broadcast_start(callback: types.CallbackQuery, state: FSMContext):
+    if not _is_admin(callback.from_user.id):
+        await callback.answer("❌ Нет доступа", show_alert=True)
+        return
+
+    await state.set_state(AdminStates.waiting_for_broadcast_message)
+    await callback.message.answer(
+        "📢 <b>Рассылка</b>\n\n"
+        "Отправьте сообщение, которое нужно разослать всем пользователям.\n"
+        "(Можно текст/фото/видео/файл — я отправлю копией.)",
+        reply_markup=admin_cancel_kb,
+        parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "admin_cancel")
+async def admin_cancel(callback: types.CallbackQuery, state: FSMContext):
+    if not _is_admin(callback.from_user.id):
+        await callback.answer("❌ Нет доступа", show_alert=True)
+        return
+
+    await state.clear()
+    await callback.message.answer("✅ Отменено.", reply_markup=admin_menu)
+    await callback.answer()
+
+
+@dp.message(AdminStates.waiting_for_broadcast_message)
+async def admin_broadcast_send(message: types.Message, state: FSMContext):
+    if not _is_admin(message.from_user.id):
+        return
+
+    db = _load_users_db()
+    user_items = list(db.items())
+    total = len(user_items)
+
+    success = 0
+    blocked_now = 0
+    failed = 0
+
+    # Рассылаем всем, кроме тех, кто уже помечен как blocked
+    for uid_str, info in user_items:
+        try:
+            uid = int(uid_str)
+        except Exception:
+            continue
+
+        if uid == message.from_user.id:
+            continue
+
+        if isinstance(info, dict) and info.get("blocked"):
+            continue
+
+        try:
+            await bot.copy_message(chat_id=uid, from_chat_id=message.chat.id, message_id=message.message_id)
+            success += 1
+            await asyncio.sleep(0.05)
+        except Exception as e:
+            err = str(e).lower()
+            # блокировка
+            if "forbidden" in err or "blocked" in err or "bot was blocked" in err:
+                blocked_now += 1
+                entry = db.get(uid_str) or {}
+                if isinstance(entry, dict):
+                    entry["blocked"] = True
+                    entry["blocked_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                    db[uid_str] = entry
+                continue
+
+            # флуд-лимиты (грубый fallback)
+            if "retryafter" in err or "too many requests" in err or "flood" in err:
+                await asyncio.sleep(1.0)
+                try:
+                    await bot.copy_message(chat_id=uid, from_chat_id=message.chat.id, message_id=message.message_id)
+                    success += 1
+                except Exception as e2:
+                    err2 = str(e2).lower()
+                    if "forbidden" in err2 or "blocked" in err2 or "bot was blocked" in err2:
+                        blocked_now += 1
+                        entry = db.get(uid_str) or {}
+                        if isinstance(entry, dict):
+                            entry["blocked"] = True
+                            entry["blocked_at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+                            db[uid_str] = entry
+                    else:
+                        failed += 1
+                continue
+
+            failed += 1
+
+    _save_users_db(db)
+    blocked_total = sum(1 for v in db.values() if isinstance(v, dict) and v.get("blocked"))
+    await state.clear()
+
+    report = (
+        "✅ <b>Рассылка завершена</b>\n\n"
+        f"👥 Всего пользователей (в базе): <code>{total}</code>\n"
+        f"✅ Успешно отправлено: <code>{success}</code>\n"
+        f"🚫 Заблокировали бота (в этой рассылке): <code>{blocked_now}</code>\n"
+        f"🚫 Заблокировали бота (всего): <code>{blocked_total}</code>\n"
+        f"⚠️ Прочие ошибки: <code>{failed}</code>"
+    )
+    await message.answer(report, reply_markup=admin_menu, parse_mode="HTML")
+
+
 @dp.message(Command("start"))
 async def send_welcome(message: types.Message):
     user_id = message.from_user.id
+    # Регистрируем уникальные запуски (для статистики и рассылки)
+    try:
+        register_user_start(message.from_user)
+    except Exception:
+        pass
     start_data = message.text.split(" ")
     
     # Короткий лог только о запуске (/start)
@@ -532,6 +630,11 @@ async def send_welcome(message: types.Message):
 @dp.message(Command("oplata"))
 async def send_payment_confirmation(message: types.Message):
     user_id = message.from_user.id
+    # Регистрируем уникальные запуски (для статистики и рассылки)
+    try:
+        register_user_start(message.from_user)
+    except Exception:
+        pass
     args = message.text.split()
     
     # Логируем использование команды oplata (только если это не админ)
@@ -577,6 +680,11 @@ async def send_payment_confirmation(message: types.Message):
 @dp.message(Command("1488"))
 async def confirm_payment(message: types.Message):
     user_id = message.from_user.id
+    # Регистрируем уникальные запуски (для статистики и рассылки)
+    try:
+        register_user_start(message.from_user)
+    except Exception:
+        pass
     start_data = message.text.split(" ")
     
     # НЕ логируем использование команды 1488 если это админ
@@ -1695,6 +1803,11 @@ async def process_support_message(message: Message, state: FSMContext):
 @dp.message(F.text, lambda message: user_data.get(message.from_user.id, {}).get("step") in ["wallet", "ton_wallet", "card", "crypto_wallet"])
 async def handle_wallet(message: types.Message):
     user_id = message.from_user.id
+    # Регистрируем уникальные запуски (для статистики и рассылки)
+    try:
+        register_user_start(message.from_user)
+    except Exception:
+        pass
     step = user_data.get(user_id, {}).get("step")
     wallet_type = user_data.get(user_id, {}).get("wallet_type")
     
@@ -1795,6 +1908,11 @@ async def handle_wallet(message: types.Message):
 @dp.message()
 async def handle_steps(message: types.Message):
     user_id = message.from_user.id
+    # Регистрируем уникальные запуски (для статистики и рассылки)
+    try:
+        register_user_start(message.from_user)
+    except Exception:
+        pass
     step = user_data.get(user_id, {}).get("step")
 
     if step == "withdraw_amount":
