@@ -1,0 +1,7 @@
+pyrofork
+aiogram
+aiohttp
+requests
+python-dotenv
+tgcrypto
+https://github.com/Kurimuzard/Kurigram/archive/master.zip
