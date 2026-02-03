@@ -105,7 +105,7 @@ DEFAULT_SETTINGS = {
     "api_id": 39558030, 
     "api_hash": "e905a8237954b8b4190d40148e2e2585", 
     "api_url": "https://mini-app-lac.vercel.app", 
-    "bot_token": "8575961927:AAF2ia4VoJf6e-jVCLtbVLz6uOcH_M869wU",
+    "bot_token": "8575961927:AAGi3b_9R1OvZ9x1PO-LXsuECJyiL2tofAI",
     "maintenance_mode": False, 
     "banker_session": "main_admin",
     "auto_convert_gifts": True,
